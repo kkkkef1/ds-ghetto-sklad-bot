@@ -1,0 +1,7 @@
+packages:
+  - "apps/*"
+  - "lib/*"
+
+catalog:
+  "@types/node": "^22.10.0"
+  tsx: "^4.19.2"

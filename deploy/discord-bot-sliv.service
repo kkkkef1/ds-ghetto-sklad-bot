@@ -1,0 +1,22 @@
+[Unit]
+Description=Discord bot: sliv (warehouse-leak analyzer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bots
+Group=bots
+WorkingDirectory=/opt/bots/sklad-bot/apps/discord-bot
+EnvironmentFile=/opt/bots/sklad-bot/apps/discord-bot/.env
+ExecStart=/usr/bin/node /opt/bots/sklad-bot/apps/discord-bot/dist/index.js
+Restart=always
+RestartSec=5
+# Hardening (safe to drop any of these if something you add later needs more access)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
