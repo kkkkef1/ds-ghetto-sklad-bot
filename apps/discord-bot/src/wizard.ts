@@ -11,6 +11,7 @@ import { FACTIONS, getFaction, runAnalysis } from "@workspace/log-analyzer";
 import type { Session } from "./session.js";
 
 const STEP_TIMEOUT_MS = 15 * 60_000; // 15 min per step — a stalled session doesn't hang forever
+const FACTION_SELECT_TIMEOUT_MS = 10 * 60_000; // 10 min to pick a faction, otherwise the session is closed
 const TIME_WINDOW_MINUTES = 3;
 
 // ===================== SMALL HELPERS =====================
@@ -118,26 +119,52 @@ async function collectSingleMessage(channel: TextChannel, ownerId: string, promp
   return collected.first()?.content.trim() ?? null;
 }
 
-async function selectFaction(channel: TextChannel, ownerId: string): Promise<string> {
-  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+/**
+ * First message of the session: faction picker + "Закончить сессию" button.
+ * Resolves with the chosen faction id, or `null` if the session should be
+ * closed (the owner pressed the button, or nothing was chosen within
+ * FACTION_SELECT_TIMEOUT_MS).
+ */
+async function selectFaction(channel: TextChannel, ownerId: string): Promise<string | null> {
+  const selectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("wizard_faction")
       .setPlaceholder("Выберите фракцию")
       .addOptions(FACTIONS.map(f => ({ label: f.displayName, value: f.id })))
   );
-  const msg = await channel.send({ content: "Выберите фракцию для анализа:", components: [row] });
+  const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId("wizard_cancel").setLabel("Закончить сессию").setStyle(ButtonStyle.Danger)
+  );
+  const prompt = "Выберите фракцию для анализа. Если фракция не будет выбрана в течение 10 минут, сессия закроется автоматически.";
+  const msg = await channel.send({ content: prompt, components: [selectRow, buttonRow] });
 
-  return new Promise<string>((resolve) => {
+  return new Promise<string | null>((resolve) => {
     const collector = msg.createMessageComponentCollector({
       filter: i => i.user.id === ownerId,
-      componentType: ComponentType.StringSelect,
-      time: STEP_TIMEOUT_MS,
-      max: 1,
+      time: FACTION_SELECT_TIMEOUT_MS,
     });
+
+    let result: string | null = null;
+
     collector.on("collect", async interaction => {
-      const value = interaction.values[0];
-      await interaction.update({ content: `Фракция: **${getFaction(value).displayName}**`, components: [] });
-      resolve(value);
+      if (interaction.isStringSelectMenu()) {
+        result = interaction.values[0];
+        await interaction.update({ content: `Фракция: **${getFaction(result).displayName}**`, components: [] });
+        collector.stop("selected");
+      } else if (interaction.isButton() && interaction.customId === "wizard_cancel") {
+        result = null;
+        await interaction.update({ content: "Сессия закрыта по вашему запросу.", components: [] });
+        collector.stop("cancelled");
+      }
+    });
+
+    collector.on("end", async (_collected, reason) => {
+      if (reason === "time") {
+        await msg
+          .edit({ content: "⏱️ Фракция не выбрана в течение 10 минут — сессия закрыта.", components: [] })
+          .catch(() => {});
+      }
+      resolve(result);
     });
   });
 }
@@ -145,7 +172,14 @@ async function selectFaction(channel: TextChannel, ownerId: string): Promise<str
 // ===================== MAIN WIZARD =====================
 
 export async function runWizard(channel: TextChannel, session: Session): Promise<void> {
-  session.faction = await selectFaction(channel, session.ownerId);
+  const faction = await selectFaction(channel, session.ownerId);
+  if (!faction) {
+    // Cancelled via the button or timed out — the channel stays as a record,
+    // the caller frees the user's active-session slot.
+    session.step = "done";
+    return;
+  }
+  session.faction = faction;
   session.step = "await_warehouse";
 
   const warehouseParts = await collectMultiText(channel, session.ownerId, {
