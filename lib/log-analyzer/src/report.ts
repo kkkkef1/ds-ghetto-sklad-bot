@@ -92,7 +92,8 @@ export function generateTxtReport(
   const lines: string[] = [];
 
   lines.push("=".repeat(60));
-  lines.push(`GTA5RP LOG ANALYZER — ${faction}`);
+  lines.push(`GTA5RP Admin Helper — ${faction}`);
+  lines.push(`⚠️ Проверяйте предметы и меру наказания!`);
   lines.push(`Сформировано: ${genTime}`);
   lines.push(`Период логов: ${startDate} — ${endDate}`);
   lines.push(`Нарушителей: ${players.length} · Предметов: ${totalItems}${totalAmmo ? ` · Патронов: ${totalAmmo}` : ""}${totalMedkits ? ` · Аптечек: ${totalMedkits}` : ""}`);

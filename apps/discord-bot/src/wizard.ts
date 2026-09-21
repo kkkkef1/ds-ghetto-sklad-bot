@@ -43,6 +43,7 @@ function collectMultiText(
   opts: { prompt: string; doneLabel?: string; allowSkip?: boolean; skipLabel?: string }
 ): Promise<string[]> {
   const collected: string[] = [];
+  const pendingReads: Promise<void>[] = [];
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId("wizard_done").setLabel(opts.doneLabel ?? "Готово").setStyle(ButtonStyle.Success),
@@ -59,12 +60,15 @@ function collectMultiText(
         filter: m => m.author.id === ownerId,
         time: STEP_TIMEOUT_MS,
       });
-      msgCollector.on("collect", async m => {
-        const parts = await readAttachmentOrContent(m);
-        if (parts.length) {
-          collected.push(...parts);
-          await m.react("✅").catch(() => {});
-        }
+      msgCollector.on("collect", m => {
+        const read = (async () => {
+          const parts = await readAttachmentOrContent(m);
+          if (parts.length) {
+            collected.push(...parts);
+            await m.react("✅").catch(() => {});
+          }
+        })();
+        pendingReads.push(read);
       });
 
       const btnCollector = promptMsg.createMessageComponentCollector({
@@ -84,7 +88,9 @@ function collectMultiText(
 
       btnCollector.on("collect", async interaction => {
         const skip = interaction.customId === "wizard_skip";
-        await interaction.update({
+        await interaction.deferUpdate();
+        if (!skip) await Promise.all(pendingReads);
+        await promptMsg.edit({
           content: skip ? "Пропущено." : `Принято: ${collected.length} сообщение(й)/файл(ов).`,
           components: [],
         });
@@ -93,6 +99,7 @@ function collectMultiText(
 
       btnCollector.on("end", async (_c, reason) => {
         if (reason !== "done") {
+          await Promise.all(pendingReads).catch(() => {});
           await promptMsg.edit({ content: `${opts.prompt}\n\n⏱️ Время вышло, продолжаю с тем, что получено.`, components: [] }).catch(() => {});
           await finish(false);
         }
