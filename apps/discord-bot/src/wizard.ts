@@ -8,11 +8,34 @@ import {
   type TextChannel,
 } from "discord.js";
 import { FACTIONS, getFaction, runAnalysis } from "@workspace/log-analyzer";
+import type { AnalysisProgress, AnalysisStage } from "@workspace/log-analyzer";
 import type { Session } from "./session.js";
+import { runExclusive } from "./analysisQueue.js";
 
 const STEP_TIMEOUT_MS = 15 * 60_000; // 15 min per step — a stalled session doesn't hang forever
 const FACTION_SELECT_TIMEOUT_MS = 10 * 60_000; // 10 min to pick a faction, otherwise the session is closed
 const TIME_WINDOW_MINUTES = 3;
+
+// Hard cap on the size of the placement logs fed into one analysis run.
+// This isn't about correctness — it's a resource guardrail: a single
+// pathologically large paste (the kind that pinned the server's CPU and
+// dropped the bot's connection) is rejected up front instead of being
+// throttled through for minutes on end. Only placement logs count towards
+// it — that's normally where the volume is (multiple houses/vehicles/
+// family logs stacked together), while the faction warehouse log is a
+// single, naturally bounded log. 50 MB is generous for normal placement
+// logs; if it's ever hit for real, splitting the period into smaller
+// chunks is the right fix, not raising the cap.
+const MAX_PLACEMENT_LOG_CHARS = 50_000_000;
+
+const STAGE_LABELS: Record<AnalysisStage, string> = {
+  faction_log: "лог склада",
+  placement_logs: "логи размещений",
+  matching_ammo: "сопоставление патронов",
+  matching_medkits: "сопоставление аптечек",
+  players: "разбор нарушителей",
+  report: "сборка отчёта",
+};
 
 // ===================== SMALL HELPERS =====================
 
@@ -216,16 +239,57 @@ export async function runWizard(channel: TextChannel, session: Session): Promise
     return;
   }
 
-  const processingMsg = await channel.send("🔎 Анализирую логи...");
+  const placementChars = session.placementLogs.reduce((a, s) => a + s.length, 0);
+  if (placementChars > MAX_PLACEMENT_LOG_CHARS) {
+    await channel.send(
+      `⚠️ Логи размещений слишком большие для одного анализа (≈${(placementChars / 1_000_000).toFixed(1)} МБ, лимит ${MAX_PLACEMENT_LOG_CHARS / 1_000_000} МБ) — обработка такого объёма перегружает сервер. ` +
+      "Разбейте период на несколько частей поменьше и запустите `/sliv` заново для каждой. Сессия завершена без результата."
+    );
+    session.step = "done";
+    return;
+  }
 
-  const result = runAnalysis({
-    factionLogContent: session.warehouseLog,
-    placementLogContents: session.placementLogs,
-    factionListContent: session.rosterLog ?? undefined,
-    selectedFaction: session.faction,
-    adminName: session.adminName,
-    timeWindowMinutes: TIME_WINDOW_MINUTES,
-  });
+  const processingMsg = await channel.send("🔎 Анализирую логи... (0 сек)");
+
+  let progress: AnalysisProgress = { stage: "faction_log", done: 0, total: 1 };
+  const startedAt = Date.now();
+  const renderStatus = (prefix: string) => {
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+    const pct = progress.total > 1 ? ` ${Math.round((progress.done / progress.total) * 100)}%` : "";
+    return `${prefix} (${STAGE_LABELS[progress.stage]}${pct}, ${elapsed} сек)`;
+  };
+  // Analysis is throttled and can take a while on large logs — this proves
+  // to the admin the bot is still alive and working, not stuck or dead.
+  const progressTimer = setInterval(() => {
+    processingMsg.edit(renderStatus("🔎 Анализирую логи...")).catch(() => {});
+  }, 4000);
+
+  let result: Awaited<ReturnType<typeof runAnalysis>>;
+  try {
+    result = await runExclusive(async hadToWait => {
+      if (hadToWait) {
+        await processingMsg.edit("⏳ Сейчас выполняется другой анализ — этот начнётся сразу после него...").catch(() => {});
+      }
+      return runAnalysis(
+        {
+          factionLogContent: session.warehouseLog!,
+          placementLogContents: session.placementLogs,
+          factionListContent: session.rosterLog ?? undefined,
+          selectedFaction: session.faction!,
+          adminName: session.adminName!,
+          timeWindowMinutes: TIME_WINDOW_MINUTES,
+        },
+        info => { progress = info; }
+      );
+    });
+  } catch (err) {
+    clearInterval(progressTimer);
+    await processingMsg.edit("❌ Ошибка при анализе логов. Сессия завершена без результата.").catch(() => {});
+    console.error("[wizard] analysis failed:", err);
+    session.step = "done";
+    return;
+  }
+  clearInterval(progressTimer);
 
   const buffer = Buffer.from(result.txtReport, "utf-8");
   const fileName = `report_${session.faction}_${Date.now()}.txt`;

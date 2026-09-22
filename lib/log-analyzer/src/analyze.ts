@@ -1,12 +1,24 @@
-import type { AmmoMatch, AnalysisInput, AnalysisResult, LogEvent, MedkitMatch, PlayerResultData } from "./types.js";
+import type {
+  AmmoMatch, AnalysisInput, AnalysisResult, AnalysisStage, LogEvent, MedkitMatch,
+  PlayerResultData, ProgressCallback,
+} from "./types.js";
 import { getFaction } from "./factions.js";
 import { cleanItemName, parseFactionLogContent, parsePlacementLogContent } from "./parser.js";
 import { PlayerCase, analyzeConsumables, getLocationKey } from "./matching.js";
 import { calculatePunishment } from "./punishment.js";
 import { generateEvidenceText, generateTxtReport } from "./report.js";
+import { Yielder } from "./throttle.js";
 
-export function runAnalysis(input: AnalysisInput): AnalysisResult {
+/**
+ * Runs the full leak analysis. Throttled: on large logs this yields to the
+ * event loop periodically instead of running as one uninterrupted synchronous
+ * block (see throttle.ts), and reports coarse progress via `onProgress` so a
+ * caller can show the user the process is still alive.
+ */
+export async function runAnalysis(input: AnalysisInput, onProgress?: ProgressCallback): Promise<AnalysisResult> {
   const faction = getFaction(input.selectedFaction);
+  const report = (stage: AnalysisStage, done: number, total: number) =>
+    onProgress?.({ stage, done, total });
 
   const players: Record<string, PlayerCase> = {};
   const activePlayers = new Set<string>();
@@ -43,13 +55,16 @@ export function runAnalysis(input: AnalysisInput): AnalysisResult {
     }
   };
 
-  const [fSe, , fAmmo, fMed] = parseFactionLogContent(input.factionLogContent, faction);
+  report("faction_log", 0, 1);
+  const [fSe, , fAmmo, fMed] = await parseFactionLogContent(input.factionLogContent, faction);
   addTake(fSe);
   for (const e of fAmmo) { if (!ammoTakes[e.player_id]) ammoTakes[e.player_id] = []; ammoTakes[e.player_id].push(e); }
   for (const e of fMed) { if (!medkitTakes[e.player_id]) medkitTakes[e.player_id] = []; medkitTakes[e.player_id].push(e); }
+  report("faction_log", 1, 1);
 
-  for (const content of input.placementLogContents) {
-    const [pSe, , pAmmo, pMed] = parsePlacementLogContent(content, faction);
+  const placementTotal = input.placementLogContents.length;
+  for (let i = 0; i < placementTotal; i++) {
+    const [pSe, , pAmmo, pMed] = await parsePlacementLogContent(input.placementLogContents[i], faction);
     addPlacement(pSe);
     for (const e of pAmmo) {
       if (e.action === "GIVE") { if (!ammoGives[e.player_id]) ammoGives[e.player_id] = []; ammoGives[e.player_id].push(e); }
@@ -59,15 +74,25 @@ export function runAnalysis(input: AnalysisInput): AnalysisResult {
       if (e.action === "GIVE") { if (!medkitGives[e.player_id]) medkitGives[e.player_id] = []; medkitGives[e.player_id].push(e); }
       else { if (!medkitTakesRaw[e.player_id]) medkitTakesRaw[e.player_id] = []; medkitTakesRaw[e.player_id].push(e); }
     }
+    report("placement_logs", i + 1, placementTotal);
   }
 
-  for (const [pid, p] of Object.entries(players)) {
+  const playerYielder = new Yielder();
+  const playerEntries = Object.entries(players);
+  for (let i = 0; i < playerEntries.length; i++) {
+    const [pid, p] = playerEntries[i];
     p.is_active = activePlayers.has(pid);
     p.analyze(p.is_active);
+    await playerYielder.tick();
+    report("players", i + 1, playerEntries.length);
   }
 
-  const ammoMatches = analyzeConsumables(ammoTakes, ammoGives, ammoTakesRaw, tw);
-  const medkitMatches = analyzeConsumables(medkitTakes, medkitGives, medkitTakesRaw, tw);
+  report("matching_ammo", 0, 1);
+  const ammoMatches = await analyzeConsumables(ammoTakes, ammoGives, ammoTakesRaw, tw);
+  report("matching_ammo", 1, 1);
+  report("matching_medkits", 0, 1);
+  const medkitMatches = await analyzeConsumables(medkitTakes, medkitGives, medkitTakesRaw, tw);
+  report("matching_medkits", 1, 1);
 
   const allLeakPids = new Set<string>([
     ...Object.values(players).filter(p => p.hasMatches()).map(p => p.player_id),
@@ -136,6 +161,7 @@ export function runAnalysis(input: AnalysisInput): AnalysisResult {
   const totalAmmoCount = Object.values(ammoMatches).flat().reduce((a, m) => a + m.give_quantity, 0);
   const totalMedkitsCount = Object.values(medkitMatches).flat().reduce((a, m) => a + m.give_quantity, 0);
 
+  report("report", 0, 1);
   const playerResults: PlayerResultData[] = playersList.flatMap(p => {
     if (p.weighted_items === 0) return [];
     const serialItems = p.matched_takes.map((take, idx) => ({
@@ -179,6 +205,8 @@ export function runAnalysis(input: AnalysisInput): AnalysisResult {
       matched_placements: p.matched_placements,
     }];
   });
+
+  report("report", 1, 1);
 
   return {
     players: playerResults,

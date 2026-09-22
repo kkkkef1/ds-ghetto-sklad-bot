@@ -1,5 +1,6 @@
 import type { AmmoMatch, LogEvent } from "./types.js";
 import { parseDateTime } from "./parser.js";
+import { Yielder } from "./throttle.js";
 
 // ===================== PLAYER CASE (serial take → placement matching) =====================
 
@@ -99,13 +100,18 @@ export function getLocationKey(event: LogEvent): string {
 
 // ===================== AMMO / MEDKIT (time-window matching, no serials) =====================
 
-export function analyzeConsumables(
+export async function analyzeConsumables(
   takes: Record<string, LogEvent[]>,
   gives: Record<string, LogEvent[]>,
   takesRaw: Record<string, LogEvent[]>,
   timeWindow: number
-): Record<string, AmmoMatch[]> {
+): Promise<Record<string, AmmoMatch[]>> {
   const results: Record<string, AmmoMatch[]> = {};
+  // Ticked per take-event below: for each take we scan the unused gives of
+  // its item type looking for the closest one within the time window, so a
+  // player with thousands of take/give events costs roughly takes × gives —
+  // exactly the kind of loop a single huge paste can blow up.
+  const yielder = new Yielder();
 
   for (const [pid, takesList] of Object.entries(takes)) {
     const givesList = gives[pid] ?? [];
@@ -145,6 +151,7 @@ export function analyzeConsumables(
       }
 
       for (const takeEvent of takeSorted) {
+        await yielder.tick();
         const takeDt = parseDateTime(takeEvent.datetime).getTime();
         if (isNaN(takeDt)) continue;
         const takeQty = parseInt(takeEvent.quantity ?? "1") || 1;

@@ -1,5 +1,6 @@
 import type { LogEvent } from "./types.js";
 import { type FactionConfig, isTrackableSerial } from "./factions.js";
+import { Yielder } from "./throttle.js";
 
 // ===================== CONSTANTS =====================
 
@@ -298,14 +299,15 @@ function processFactionTextRow(
   }
 }
 
-export function parseFactionLogContent(
+export async function parseFactionLogContent(
   content: string,
   faction: FactionConfig
-): [LogEvent[], LogEvent[], LogEvent[], LogEvent[]] {
+): Promise<[LogEvent[], LogEvent[], LogEvent[], LogEvent[]]> {
   const serialEvents: LogEvent[] = [];
   const armorEvents: LogEvent[] = [];
   const ammoEvents: LogEvent[] = [];
   const medkitEvents: LogEvent[] = [];
+  const yielder = new Yielder();
 
   try {
     const sections = splitTsvSections(content);
@@ -313,6 +315,7 @@ export function parseFactionLogContent(
       if (detectSectionType(section.headers) !== "faction" && !section.headers.includes("Фракция")) continue;
 
       for (const row of section.rows) {
+        await yielder.tick();
         try {
           const text = getField(section.headers, row, "Текст");
           const personage = getField(section.headers, row, "Персонаж");
@@ -337,6 +340,7 @@ export function parseFactionLogContent(
   if (serialEvents.length === 0 && armorEvents.length === 0 && ammoEvents.length === 0 && medkitEvents.length === 0) {
     const lines = content.split("\n");
     for (const line of lines) {
+      await yielder.tick();
       try {
         const trimmed = line.trim();
         if (!trimmed) continue;
@@ -385,14 +389,15 @@ function processPlacementEvent(
   }
 }
 
-export function parsePlacementLogContent(
+export async function parsePlacementLogContent(
   content: string,
   faction: FactionConfig
-): [LogEvent[], LogEvent[], LogEvent[], LogEvent[]] {
+): Promise<[LogEvent[], LogEvent[], LogEvent[], LogEvent[]]> {
   const serialEvents: LogEvent[] = [];
   const armorEvents: LogEvent[] = [];
   const ammoEvents: LogEvent[] = [];
   const medkitEvents: LogEvent[] = [];
+  const yielder = new Yielder();
 
   try {
     const sections = splitTsvSections(content);
@@ -415,6 +420,7 @@ export function parsePlacementLogContent(
       }
       if (detectedType === "vehicle") {
         for (const line of lines) {
+          await yielder.tick();
           try {
             const trimmed = line.trim();
             if (!trimmed) continue;
@@ -447,6 +453,7 @@ export function parsePlacementLogContent(
       if (stype === "faction" || stype === "unknown") continue;
 
       for (const row of section.rows) {
+        await yielder.tick();
         try {
           if (row.length < 3) continue;
           const personage = getField(section.headers, row, "Персонаж");

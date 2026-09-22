@@ -80,3 +80,26 @@ export interface AnalysisResult {
   /** Plain-text report (Discord-friendly), replaces the old htmlReport */
   txtReport: string;
 }
+
+// ===================== PROGRESS REPORTING =====================
+//
+// runAnalysis is throttled (see throttle.ts) and can take a while on large
+// logs. This lets the caller (the Discord bot) show the user that the
+// process is alive and roughly how far along it is, instead of a single
+// static "анализирую..." message.
+
+export type AnalysisStage =
+  | "faction_log"
+  | "placement_logs"
+  | "matching_ammo"
+  | "matching_medkits"
+  | "players"
+  | "report";
+
+export interface AnalysisProgress {
+  stage: AnalysisStage;
+  done: number;
+  total: number;
+}
+
+export type ProgressCallback = (progress: AnalysisProgress) => void;
