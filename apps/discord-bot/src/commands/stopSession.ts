@@ -60,19 +60,24 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  const noticeChannel = await interaction.guild?.channels.fetch(channelId).catch(() => null);
-  if (noticeChannel?.isTextBased()) {
-    await noticeChannel
-      .send(
-        isSelf
-          ? `🛑 Сессия принудительно закрыта пользователем ${interaction.user}.`
-          : `🛑 Сессия принудительно закрыта администратором ${interaction.user}.`
-      )
-      .catch(() => {});
-  }
-
+  // Ack immediately — the interaction token is only valid for 3 seconds, and
+  // channels.fetch() below is a real network call that can occasionally take
+  // longer than that (this used to cause DiscordAPIError[10062] "Unknown
+  // interaction" when the fetch delayed the reply past the window).
   await interaction.reply({
     content: `Сессия <#${channelId}> закрыта.`,
     ephemeral: true,
   });
+
+  interaction.guild?.channels.fetch(channelId)
+    .then(async (noticeChannel) => {
+      if (noticeChannel?.isTextBased()) {
+        await noticeChannel.send(
+          isSelf
+            ? `🛑 Сессия принудительно закрыта пользователем ${interaction.user}.`
+            : `🛑 Сессия принудительно закрыта администратором ${interaction.user}.`
+        );
+      }
+    })
+    .catch(() => {});
 }

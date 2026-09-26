@@ -5,7 +5,13 @@ import {
   type ChatInputCommandInteraction,
   type TextChannel,
 } from "discord.js";
-import { createSession, endSession, getActiveSessionChannel } from "../session.js";
+import {
+  createSession,
+  endSession,
+  getActiveSessionChannel,
+  registerSessionController,
+  unregisterSessionController,
+} from "../session.js";
 import { runWizard } from "../wizard.js";
 
 export const data = new SlashCommandBuilder()
@@ -73,7 +79,10 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   await interaction.editReply({ content: `Сессия создана: ${channel}` });
   await channel.send(`${interaction.user} сессия начата. Один запуск команды = одна сессия — данные из других сессий сюда не попадут.`);
 
-  runWizard(channel, session)
+  const abortController = new AbortController();
+  registerSessionController(channel.id, { forceClose: () => abortController.abort() });
+
+  runWizard(channel, session, abortController.signal)
     .catch(async (err) => {
       console.error(`[sliv] Ошибка в сессии ${channel.id}:`, err);
       await channel.send("❌ Произошла ошибка при обработке. Сессия прервана — можно запустить новую командой `/sliv`.").catch(() => {});
@@ -82,5 +91,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       // Frees the user's "one active session" slot. The channel itself stays
       // (per requirements, no deletion/archival) as a permanent record.
       endSession(channel.id);
+      unregisterSessionController(channel.id);
     });
 }
