@@ -39,6 +39,21 @@ const STAGE_LABELS: Record<AnalysisStage, string> = {
 
 // ===================== SMALL HELPERS =====================
 
+/**
+ * Wires `stop()` to fire the moment `signal` aborts (immediately, if it's
+ * already aborted). Returns a detach function to call once the step
+ * settles normally, so the listener doesn't leak or fire after the fact.
+ */
+function stopOnAbort(signal: AbortSignal, stop: () => void): () => void {
+  if (signal.aborted) {
+    stop();
+    return () => {};
+  }
+  const onAbort = () => stop();
+  signal.addEventListener("abort", onAbort, { once: true });
+  return () => signal.removeEventListener("abort", onAbort);
+}
+
 async function readAttachmentOrContent(message: Message): Promise<string[]> {
   const parts: string[] = [];
   if (message.attachments.size) {
@@ -64,6 +79,7 @@ async function readAttachmentOrContent(message: Message): Promise<string[]> {
 function collectMultiText(
   channel: TextChannel,
   ownerId: string,
+  signal: AbortSignal,
   opts: { prompt: string; doneLabel?: string; allowSkip?: boolean; skipLabel?: string }
 ): Promise<string[]> {
   const collected: string[] = [];
@@ -105,41 +121,86 @@ function collectMultiText(
       const finish = async (skip: boolean) => {
         if (settled) return;
         settled = true;
+        detachAbort();
         msgCollector.stop("done");
         btnCollector.stop("done");
         resolve(skip ? [] : collected);
       };
 
+      const detachAbort = stopOnAbort(signal, () => {
+        if (settled) return;
+        msgCollector.stop("force-closed");
+        btnCollector.stop("force-closed");
+      });
+
       btnCollector.on("collect", async interaction => {
-        const skip = interaction.customId === "wizard_skip";
-        await interaction.deferUpdate();
-        if (!skip) await Promise.all(pendingReads);
-        await promptMsg.edit({
-          content: skip ? "Пропущено." : `Принято: ${collected.length} сообщение(й)/файл(ов).`,
-          components: [],
-        });
-        await finish(skip);
+        // Guards against a stray second click landing here after the first
+        // one already resolved the step, and — more importantly — makes
+        // sure a rejected deferUpdate()/edit() (e.g. DiscordAPIError 10062
+        // "Unknown interaction" when the 3s ack window was missed) is
+        // logged instead of crashing the whole bot process.
+        if (settled) return;
+        try {
+          const skip = interaction.customId === "wizard_skip";
+          await interaction.deferUpdate();
+          if (!skip) await Promise.all(pendingReads);
+          await promptMsg.edit({
+            content: skip ? "Пропущено." : `Принято: ${collected.length} сообщение(й)/файл(ов).`,
+            components: [],
+          });
+          await finish(skip);
+        } catch (err) {
+          console.error("[wizard] Не удалось обработать нажатие кнопки на шаге сбора логов:", err);
+        }
       });
 
       btnCollector.on("end", async (_c, reason) => {
-        if (reason !== "done") {
-          await Promise.all(pendingReads).catch(() => {});
+        if (reason === "done") return;
+        await Promise.all(pendingReads).catch(() => {});
+        if (reason === "force-closed") {
+          // /stopsliv already posts its own message explaining the closure —
+          // just clear the buttons here, no need for a second explanation.
+          await promptMsg.edit({ content: opts.prompt, components: [] }).catch(() => {});
+        } else {
           await promptMsg.edit({ content: `${opts.prompt}\n\n⏱️ Время вышло, продолжаю с тем, что получено.`, components: [] }).catch(() => {});
-          await finish(false);
         }
+        await finish(false);
       });
     })();
   });
 }
 
-async function collectSingleMessage(channel: TextChannel, ownerId: string, prompt: string): Promise<string | null> {
+async function collectSingleMessage(
+  channel: TextChannel,
+  ownerId: string,
+  signal: AbortSignal,
+  prompt: string
+): Promise<string | null> {
   await channel.send(prompt);
-  const collected = await channel.awaitMessages({
-    filter: m => m.author.id === ownerId && m.content.trim().length > 0,
-    max: 1,
-    time: STEP_TIMEOUT_MS,
+  return new Promise<string | null>((resolve) => {
+    const collector = channel.createMessageCollector({
+      filter: m => m.author.id === ownerId && m.content.trim().length > 0,
+      max: 1,
+      time: STEP_TIMEOUT_MS,
+    });
+
+    let settled = false;
+    const finish = (value: string | null) => {
+      if (settled) return;
+      settled = true;
+      detachAbort();
+      collector.stop("done");
+      resolve(value);
+    };
+
+    const detachAbort = stopOnAbort(signal, () => collector.stop("force-closed"));
+
+    collector.on("collect", m => finish(m.content.trim()));
+    collector.on("end", (collected, reason) => {
+      if (reason === "done") return;
+      finish(collected.first()?.content.trim() ?? null);
+    });
   });
-  return collected.first()?.content.trim() ?? null;
 }
 
 /**
@@ -148,7 +209,7 @@ async function collectSingleMessage(channel: TextChannel, ownerId: string, promp
  * closed (the owner pressed the button, or nothing was chosen within
  * FACTION_SELECT_TIMEOUT_MS).
  */
-async function selectFaction(channel: TextChannel, ownerId: string): Promise<string | null> {
+async function selectFaction(channel: TextChannel, ownerId: string, signal: AbortSignal): Promise<string | null> {
   const selectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("wizard_faction")
@@ -169,23 +230,33 @@ async function selectFaction(channel: TextChannel, ownerId: string): Promise<str
 
     let result: string | null = null;
 
+    const detachAbort = stopOnAbort(signal, () => collector.stop("force-closed"));
+
     collector.on("collect", async interaction => {
-      if (interaction.isStringSelectMenu()) {
-        result = interaction.values[0];
-        await interaction.update({ content: `Фракция: **${getFaction(result).displayName}**`, components: [] });
-        collector.stop("selected");
-      } else if (interaction.isButton() && interaction.customId === "wizard_cancel") {
-        result = null;
-        await interaction.update({ content: "Сессия закрыта по вашему запросу.", components: [] });
-        collector.stop("cancelled");
+      try {
+        if (interaction.isStringSelectMenu()) {
+          result = interaction.values[0];
+          await interaction.update({ content: `Фракция: **${getFaction(result).displayName}**`, components: [] });
+          collector.stop("selected");
+        } else if (interaction.isButton() && interaction.customId === "wizard_cancel") {
+          result = null;
+          await interaction.update({ content: "Сессия закрыта по вашему запросу.", components: [] });
+          collector.stop("cancelled");
+        }
+      } catch (err) {
+        console.error("[wizard] Не удалось обработать выбор фракции/отмену сессии:", err);
       }
     });
 
     collector.on("end", async (_collected, reason) => {
+      detachAbort();
       if (reason === "time") {
         await msg
           .edit({ content: "⏱️ Фракция не выбрана в течение 10 минут — сессия закрыта.", components: [] })
           .catch(() => {});
+      } else if (reason === "force-closed") {
+        // /stopsliv posts its own explanation — just clear the components.
+        await msg.edit({ content: prompt, components: [] }).catch(() => {});
       }
       resolve(result);
     });
@@ -194,39 +265,44 @@ async function selectFaction(channel: TextChannel, ownerId: string): Promise<str
 
 // ===================== MAIN WIZARD =====================
 
-export async function runWizard(channel: TextChannel, session: Session): Promise<void> {
-  const faction = await selectFaction(channel, session.ownerId);
+export async function runWizard(channel: TextChannel, session: Session, signal: AbortSignal): Promise<void> {
+  const faction = await selectFaction(channel, session.ownerId, signal);
   if (!faction) {
-    // Cancelled via the button or timed out — the channel stays as a record,
-    // the caller frees the user's active-session slot.
+    // Cancelled via the button, timed out, or /stopsliv force-closed it —
+    // the channel stays as a record, the caller frees the active-session slot.
     session.step = "done";
     return;
   }
   session.faction = faction;
   session.step = "await_warehouse";
+  if (signal.aborted) { session.step = "done"; return; }
 
-  const warehouseParts = await collectMultiText(channel, session.ownerId, {
+  const warehouseParts = await collectMultiText(channel, session.ownerId, signal, {
     prompt: "**Шаг 1/4.** Отправьте лог склада фракции — текстом или файлом (можно несколько сообщений). Нажмите «Готово», когда закончите.",
   });
   session.warehouseLog = warehouseParts.join("\n");
   session.step = "await_placements";
+  if (signal.aborted) { session.step = "done"; return; }
 
-  const placementParts = await collectMultiText(channel, session.ownerId, {
+  const placementParts = await collectMultiText(channel, session.ownerId, signal, {
     prompt: "**Шаг 2/4.** Отправьте логи размещений (дом / квартира / машины / семья) — можно несколько сообщений и файлов подряд.",
   });
   session.placementLogs = placementParts;
   session.step = "await_roster";
+  if (signal.aborted) { session.step = "done"; return; }
 
-  const rosterParts = await collectMultiText(channel, session.ownerId, {
+  const rosterParts = await collectMultiText(channel, session.ownerId, signal, {
     prompt: "**Шаг 3/4.** Отправьте состав фракции (для отметки «в списке / уволен»). Необязательно.",
     allowSkip: true,
   });
   session.rosterLog = rosterParts.length ? rosterParts.join("\n") : null;
   session.step = "await_admin_name";
+  if (signal.aborted) { session.step = "done"; return; }
 
-  const adminName = await collectSingleMessage(channel, session.ownerId, "**Шаг 4/4.** Введите вашу фамилию/ник для команд наказания:");
+  const adminName = await collectSingleMessage(channel, session.ownerId, signal, "**Шаг 4/4.** Введите вашу фамилию/ник для команд наказания:");
   session.adminName = adminName || "Admin";
   session.step = "processing";
+  if (signal.aborted) { session.step = "done"; return; }
 
   if (!session.warehouseLog) {
     await channel.send("⚠️ Лог склада пуст — анализ невозможен. Сессия завершена без результата.");

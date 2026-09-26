@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { Client, Events, GatewayIntentBits, Partials, type ChatInputCommandInteraction } from "discord.js";
 import * as startSession from "./commands/startSession.js";
+import * as stopSession from "./commands/stopSession.js";
 import * as captAdmin from "./commands/captAdmin.js";
 import { CANCEL_BUTTON_PREFIX, handleCancelButton, initCaptTracker } from "./captTracker/index.js";
 
@@ -11,6 +12,7 @@ interface Command {
 
 const commands = new Map<string, Command>([
   [startSession.data.name, startSession],
+  [stopSession.data.name, stopSession],
   [captAdmin.data.name, captAdmin],
 ]);
 
@@ -21,6 +23,19 @@ const client = new Client({
     GatewayIntentBits.MessageContent, // required to read plain-text log dumps, not just slash commands
   ],
   partials: [Partials.Channel, Partials.Message],
+});
+
+// Last-resort safety net: an uncaught rejection/exception anywhere (e.g. a
+// DiscordAPIError from an interaction ack that missed its 3s window) used
+// to crash the whole process — taking down every feature, not just the one
+// button that failed — until systemd restarted it. Log it instead; the
+// individual command/button handlers below already catch their own errors,
+// this only guards against something slipping through.
+process.on("unhandledRejection", (reason) => {
+  console.error("[discord-bot] Необработанный rejection (процесс не остановлен):", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[discord-bot] Необработанное исключение (процесс не остановлен):", err);
 });
 
 client.once(Events.ClientReady, (c) => {
