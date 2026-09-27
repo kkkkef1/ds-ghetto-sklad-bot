@@ -3,6 +3,7 @@ import { Client, Events, GatewayIntentBits, Partials, type ChatInputCommandInter
 import * as startSession from "./commands/startSession.js";
 import * as stopSession from "./commands/stopSession.js";
 import * as captAdmin from "./commands/captAdmin.js";
+import * as announce from "./commands/announce.js";
 import { CANCEL_BUTTON_PREFIX, handleCancelButton, initCaptTracker } from "./captTracker/index.js";
 
 interface Command {
@@ -14,6 +15,7 @@ const commands = new Map<string, Command>([
   [startSession.data.name, startSession],
   [stopSession.data.name, stopSession],
   [captAdmin.data.name, captAdmin],
+  [announce.data.name, announce],
 ]);
 
 const client = new Client({

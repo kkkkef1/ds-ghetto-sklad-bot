@@ -174,13 +174,22 @@ interface TsvSection {
   rows: string[][];
 }
 
-function splitTsvSections(content: string): TsvSection[] {
+async function splitTsvSections(content: string, yielder: Yielder): Promise<TsvSection[]> {
   const lines = content.split("\n").map(l => l.trimEnd());
   const sections: TsvSection[] = [];
   let currentHeaders: string[] | null = null;
   let currentRows: string[][] = [];
 
   for (const line of lines) {
+    // This pass used to be fully synchronous — on a large placement log
+    // (up to the 50MB cap in wizard.ts) that's hundreds of thousands of
+    // lines processed in one uninterrupted tick, pinning the event loop
+    // long enough that *every* pending Discord interaction (not just this
+    // session's) misses its 3s ack window and the bot looks completely
+    // unresponsive. Yielding here, same as the row-processing loops below
+    // already do, keeps the bot responsive during this pass too.
+    await yielder.tick();
+
     const trimmed = line.trim();
     if (!trimmed) continue;
     if (/^[А-ЯЁA-Z][А-яёa-zА-ЯЁA-Z\s]*:$/.test(trimmed) && !trimmed.includes("\t")) continue;
@@ -310,7 +319,7 @@ export async function parseFactionLogContent(
   const yielder = new Yielder();
 
   try {
-    const sections = splitTsvSections(content);
+    const sections = await splitTsvSections(content, yielder);
     for (const section of sections) {
       if (detectSectionType(section.headers) !== "faction" && !section.headers.includes("Фракция")) continue;
 
@@ -400,12 +409,13 @@ export async function parsePlacementLogContent(
   const yielder = new Yielder();
 
   try {
-    const sections = splitTsvSections(content);
+    const sections = await splitTsvSections(content, yielder);
 
     if (sections.length === 0) {
       const lines = content.split("\n");
       let detectedType: "vehicle" | "house" | "family" | null = null;
       for (const line of lines) {
+        await yielder.tick();
         const fields = line.trim().split("\t").map(f => f.trim());
         if (fields.length < 5 || !fields[1].match(/\[\d+\]/)) continue;
         if (fields.length >= 8 && (fields[3] === "GIVE" || fields[3] === "TAKE") && /^\d+$/.test(fields[4])) {

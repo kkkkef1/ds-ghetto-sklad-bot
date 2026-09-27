@@ -1,7 +1,7 @@
 import { SlashCommandBuilder, type ChatInputCommandInteraction } from "discord.js";
 import { CREATOR_ID, DAILY_ATTACK_DEFENSE_LIMIT } from "../captTracker/config.js";
-import { dayKeyFromDate } from "../captTracker/parser.js";
-import { addHelper, getDayCounts, getHelpers, removeHelper, resetDay } from "../captTracker/store.js";
+import { dayKeyFromDate, dayKeyFromDateString } from "../captTracker/parser.js";
+import { addHelper, getDayCounts, getHelpers, removeHelper, resetDay, setFactionCounts } from "../captTracker/store.js";
 
 export const data = new SlashCommandBuilder()
   .setName("capt")
@@ -21,7 +21,18 @@ export const data = new SlashCommandBuilder()
   )
   .addSubcommand((sc) => sc.setName("helpers").setDescription("Показать список помощников"))
   .addSubcommand((sc) => sc.setName("status").setDescription("Сводка каптов за сегодня по всем фракциям"))
-  .addSubcommand((sc) => sc.setName("reset-day").setDescription("Сбросить счётчик каптов за сегодня (только создатель)"));
+  .addSubcommand((sc) => sc.setName("reset-day").setDescription("Сбросить счётчик каптов за сегодня (только создатель)"))
+  .addSubcommand((sc) =>
+    sc
+      .setName("edit-count")
+      .setDescription("Вручную выставить счётчик атак/защит фракции за день (только создатель)")
+      .addStringOption((o) => o.setName("faction").setDescription("Название фракции (как в отчёте)").setRequired(true))
+      .addIntegerOption((o) => o.setName("attacks").setDescription("Новое значение атак").setMinValue(0))
+      .addIntegerOption((o) => o.setName("defenses").setDescription("Новое значение защит").setMinValue(0))
+      .addStringOption((o) =>
+        o.setName("day").setDescription("Дата в формате ДД.ММ.ГГГГ (по умолчанию — сегодня)")
+      )
+  );
 
 function isCreator(userId: string): boolean {
   return userId === CREATOR_ID;
@@ -36,9 +47,9 @@ const ID_PATTERN = /^\d{17,20}$/;
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const sub = interaction.options.getSubcommand();
 
-  // helper-add / helper-remove / reset-day are creator-only management
-  // actions; status/helpers are readable by the creator and any helper.
-  if (sub === "helper-add" || sub === "helper-remove" || sub === "reset-day") {
+  // helper-add / helper-remove / reset-day / edit-count are creator-only
+  // management actions; status/helpers are readable by the creator and any helper.
+  if (sub === "helper-add" || sub === "helper-remove" || sub === "reset-day" || sub === "edit-count") {
     if (!isCreator(interaction.user.id)) {
       await interaction.reply({ content: "Эта команда доступна только создателю бота.", ephemeral: true });
       return;
@@ -102,6 +113,37 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     const dayKey = dayKeyFromDate(new Date());
     resetDay(dayKey);
     await interaction.reply({ content: `Счётчик каптов за ${dayKey} сброшен.`, ephemeral: true });
+    return;
+  }
+
+  if (sub === "edit-count") {
+    const faction = interaction.options.getString("faction", true).trim();
+    const attacks = interaction.options.getInteger("attacks");
+    const defenses = interaction.options.getInteger("defenses");
+
+    if (attacks === null && defenses === null) {
+      await interaction.reply({ content: "Укажите хотя бы одно значение: attacks или defenses.", ephemeral: true });
+      return;
+    }
+
+    const dayInput = interaction.options.getString("day");
+    let dayKey: string;
+    if (dayInput) {
+      const parsedDay = dayKeyFromDateString(dayInput);
+      if (!parsedDay) {
+        await interaction.reply({ content: "Некорректная дата. Формат: ДД.ММ.ГГГГ.", ephemeral: true });
+        return;
+      }
+      dayKey = parsedDay;
+    } else {
+      dayKey = dayKeyFromDate(new Date());
+    }
+
+    const updated = setFactionCounts(dayKey, faction, attacks ?? undefined, defenses ?? undefined);
+    await interaction.reply({
+      content: `Счётчик «${faction}» за ${dayKey} обновлён вручную: ⚔️ ${updated.attacks} / 🛡️ ${updated.defenses}`,
+      ephemeral: true,
+    });
     return;
   }
 }

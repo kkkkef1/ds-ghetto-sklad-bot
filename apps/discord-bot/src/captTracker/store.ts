@@ -109,6 +109,24 @@ export function recordCapt(id: string, dayKey: string, attacker: string, defende
   return record;
 }
 
+/**
+ * Manually overwrites one faction's attack/defense counters for a day —
+ * for manual corrections via `/capt edit-count`. A value left `undefined`
+ * is untouched (only the value that was actually passed gets set).
+ */
+export function setFactionCounts(
+  dayKey: string,
+  faction: string,
+  attacks: number | undefined,
+  defenses: number | undefined
+): FactionDayCounts {
+  const counts = ensureFaction(dayKey, faction);
+  if (attacks !== undefined) counts.attacks = attacks;
+  if (defenses !== undefined) counts.defenses = defenses;
+  persist();
+  return counts;
+}
+
 export function attachMirror(id: string, mirror: CaptMirrorRef) {
   const record = data.records[id];
   if (!record) return;
