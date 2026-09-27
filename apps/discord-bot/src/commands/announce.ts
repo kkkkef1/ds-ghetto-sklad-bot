@@ -12,7 +12,7 @@ import { CREATOR_ID } from "../captTracker/config.js";
 // command is being run in, which would defeat the point of this command.
 export const data = new SlashCommandBuilder()
   .setName("announce")
-  .setDescription("Опубликовать сообщение от имени бота в любом канале на любом сервере, где есть бот (только создатель)")
+  .setDescription("Опубликовать сообщение от бота в канал на любом сервере (только создатель)")
   .setDMPermission(true)
   .addStringOption((o) =>
     o.setName("channel_id").setDescription("ID канала назначения (ПКМ по каналу → Копировать ID)").setRequired(true)
