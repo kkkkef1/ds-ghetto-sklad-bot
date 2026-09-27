@@ -14,8 +14,8 @@ export const CREATOR_ID = "437954847015436288";
  * on our own server that the bot *can* read.
  */
 export const SOURCE = {
-  guildId: "1546926301699514411",
-  channelId: "1552702236117696593",
+  guildId: "1370865432776413315",
+  channelId: "1521965930526281889",
 } as const;
 
 export interface CaptDestination {

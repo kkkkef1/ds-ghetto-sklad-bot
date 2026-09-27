@@ -1,39 +1,69 @@
 // ===================== CAPT REPORT PARSER =====================
 //
-// The relayed reports always look like a stack of "Label:" / value pairs,
-// e.g.:
+// The relayed reports always look like a stack of "Label:" / value pairs.
+// The current relay format doubles the colon and puts the value on the
+// same line as the label, e.g.:
 //
-//   Дата и время:
-//   23.09.2026, 19:30:16
-//   Номер забива:
-//   2026-23-9-5
-//   ...
-//   Атака:
-//   Bloods
-//   Защита:
-//   Marabunta Grande
+//   Мое зеркало:
+//   @sthormmm
+//   Дата и время:: 25.09.2026, 17:42:04
+//   Номер забива:: 2026-25-9-5
+//   Квадрат:: 54
+//   Стороны:: 13x13
+//   Время начала:: 18:11
+//   Оружие:: на 11.43mm
+//   Дополнительно:: алкоголь/анальгетики, косяки/SPANK
+//   Атака:: `Bloods`
+//   Защита:: `Marabunta Grande`
 //
-// We only care about the *first* post for a given capture (the seizure
-// itself) — the later edit that adds "Результат:"/"Статистика:" once the
-// capture finishes is deliberately ignored (see listener.ts). This parser
-// just extracts whatever labelled fields are present; the caller decides
-// what's mandatory.
+// (Атака/Защита also arrive wrapped in backticks — Discord inline-code
+// formatting — which we strip off.) We match "one or more colons" after
+// the label so both the old single-colon, own-line style and the current
+// double-colon, same-line style work without needing two code paths.
+//
+// The source message is also edited in place once the capture resolves
+// (the relay bot adds "Результат:"/"Статистика:" to the same message).
+// We only care about the *first* post for a given capture — that edit is
+// deliberately ignored (see listener.ts, which only handles
+// Events.MessageCreate, never MessageUpdate). This parser just extracts
+// whatever labelled fields are present; the caller decides what's
+// mandatory.
 
 import type { Embed, Message } from "discord.js";
 
 const KNOWN_LABELS = [
-  "Дата и время:",
-  "Номер забива:",
-  "Квадрат:",
-  "Стороны:",
-  "Время начала:",
-  "Оружие:",
-  "Дополнительно:",
-  "Атака:",
-  "Защита:",
-  "Результат:",
-  "Статистика:",
+  "Мое зеркало",
+  "Дата и время",
+  "Номер забива",
+  "Квадрат",
+  "Стороны",
+  "Время начала",
+  "Оружие",
+  "Дополнительно",
+  "Атака",
+  "Защита",
+  "Результат",
+  "Статистика",
 ] as const;
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Matches "Label" followed by one or more colons, then optionally the
+// value on the same line (group 1). Longer labels are tried first so a
+// short label can't accidentally match a prefix of a longer one.
+const LABEL_PATTERNS = [...KNOWN_LABELS]
+  .sort((a, b) => b.length - a.length)
+  .map((label) => ({
+    label,
+    regex: new RegExp(`^${escapeRegExp(label)}:+\\s*(.*)$`),
+  }));
+
+/** Strips Discord inline-code backticks (and surrounding whitespace) some fields arrive wrapped in. */
+function stripMarkdown(value: string): string {
+  return value.trim().replace(/^`+/, "").replace(/`+$/, "").trim();
+}
 
 export interface ParsedCaptMessage {
   fields: Record<string, string>;
@@ -84,27 +114,20 @@ export function parseCaptMessage(text: string): ParsedCaptMessage | null {
   };
 
   for (const line of lines) {
-    const exactLabel = KNOWN_LABELS.find((l) => l === line);
-    if (exactLabel) {
+    const match = LABEL_PATTERNS.find((p) => p.regex.test(line));
+    if (match) {
       flush();
-      currentLabel = exactLabel.slice(0, -1); // drop trailing ":"
-      continue;
-    }
-    // Also accept "Label: value" on a single line, in case the relay
-    // collapses label and value onto one line instead of two.
-    const inlineLabel = KNOWN_LABELS.find((l) => line.startsWith(l) && line.length > l.length);
-    if (inlineLabel) {
-      flush();
-      currentLabel = inlineLabel.slice(0, -1);
-      buffer.push(line.slice(inlineLabel.length).trim());
+      currentLabel = match.label;
+      const value = line.match(match.regex)![1];
+      if (value) buffer.push(value);
       continue;
     }
     if (currentLabel) buffer.push(line);
   }
   flush();
 
-  const attacker = fields["Атака"]?.trim();
-  const defender = fields["Защита"]?.trim();
+  const attacker = stripMarkdown(fields["Атака"] ?? "");
+  const defender = stripMarkdown(fields["Защита"] ?? "");
   if (!attacker || !defender) return null;
 
   return {
@@ -132,6 +155,14 @@ export function dayKeyFromDateTime(dateTime: string | null, fallback: Date): str
     }
   }
   return dayKeyFromDate(fallback);
+}
+
+/** Parses a "ДД.ММ.ГГГГ" string (as typed into a slash command option) into a dayKey, or null if malformed. */
+export function dayKeyFromDateString(input: string): string | null {
+  const m = input.trim().match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  if (!m) return null;
+  const [, dd, mm, yyyy] = m;
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 export function dayKeyFromDate(d: Date): string {
