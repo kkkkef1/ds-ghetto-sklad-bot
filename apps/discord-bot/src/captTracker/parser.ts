@@ -52,12 +52,16 @@ function escapeRegExp(s: string): string {
 
 // Matches "Label" followed by one or more colons, then optionally the
 // value on the same line (group 1). Longer labels are tried first so a
-// short label can't accidentally match a prefix of a longer one.
+// short label can't accidentally match a prefix of a longer one. A run of
+// non-letter characters (emoji, symbols, extra spaces) is allowed before
+// the label itself — the real relay decorates some lines with an emoji,
+// e.g. "🗡Атака:: `Bloods`", and without this the label wouldn't be
+// recognized at all (the whole report would silently fail to parse).
 const LABEL_PATTERNS = [...KNOWN_LABELS]
   .sort((a, b) => b.length - a.length)
   .map((label) => ({
     label,
-    regex: new RegExp(`^${escapeRegExp(label)}:+\\s*(.*)$`),
+    regex: new RegExp(`^[^\\p{L}]*${escapeRegExp(label)}:+\\s*(.*)$`, "u"),
   }));
 
 /** Strips Discord inline-code backticks (and surrounding whitespace) some fields arrive wrapped in. */

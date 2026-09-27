@@ -10,7 +10,7 @@ import { Events, type Client, type Message } from "discord.js";
 import { SOURCE } from "./config.js";
 import { dayKeyFromDateTime, extractFullText, parseCaptMessage } from "./parser.js";
 import { publishCapt } from "./mirror.js";
-import { recordCapt } from "./store.js";
+import { findRecordByCaptNumber, recordCapt } from "./store.js";
 
 export function registerCaptListener(client: Client): void {
   client.on(Events.MessageCreate, async (message: Message) => {
@@ -27,8 +27,16 @@ export function registerCaptListener(client: Client): void {
 
     const dayKey = dayKeyFromDateTime(parsed.dateTime, message.createdAt);
 
+    // The relay has been observed sending the exact same report as two
+    // separate messages (not an edit — a genuine duplicate MessageCreate).
+    // Skip recording it a second time if we already have a record for this
+    // exact capt number today.
+    if (parsed.captNumber && findRecordByCaptNumber(dayKey, parsed.captNumber)) {
+      return;
+    }
+
     try {
-      const record = recordCapt(message.id, dayKey, parsed.attacker, parsed.defender);
+      const record = recordCapt(message.id, dayKey, parsed.attacker, parsed.defender, parsed.captNumber);
       await publishCapt(client, record.id, parsed.attacker, parsed.defender, dayKey);
     } catch (err) {
       console.error("[captTracker] Не удалось обработать новый забив:", err);

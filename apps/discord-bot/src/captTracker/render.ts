@@ -25,34 +25,41 @@ export function buildCaptContent(opts: BuildCaptContentOptions): string {
 
   const lines: string[] = [];
   lines.push(DIVIDER);
-  lines.push(canceled ? `Капт отменён: ${attacker} ${defender}` : `Новый капт: ${attacker} ${defender}`);
+  lines.push(
+    canceled
+      ? `❌ **Капт отменён:**  ${attacker}  ${ATTACK_EMOJI}  vs  ${DEFENSE_EMOJI}  ${defender}`
+      : `🆕 **Новый капт:**  ${attacker}  ${ATTACK_EMOJI}  vs  ${DEFENSE_EMOJI}  ${defender}`
+  );
   lines.push(DIVIDER);
-  lines.push("Сводка за день:");
+  lines.push("");
+  lines.push("**Сводка за день:**");
+  lines.push("");
   for (const [faction, counts] of Object.entries(dayCounts)) {
-    lines.push(`• ${faction}: ${ATTACK_EMOJI} ${counts.attacks} / ${DEFENSE_EMOJI} ${counts.defenses}`);
+    lines.push(`•  **${faction}**`);
+    lines.push(`　${ATTACK_EMOJI} атаки: **${counts.attacks}**　　${DEFENSE_EMOJI} защиты: **${counts.defenses}**`);
+    lines.push("");
   }
-  lines.push(DIVIDER);
+  // Drop the extra trailing blank line after the last faction.
+  if (lines[lines.length - 1] === "") lines.pop();
 
   if (!canceled) {
     const violations: string[] = [];
     for (const [faction, counts] of Object.entries(dayCounts)) {
       if (counts.attacks > DAILY_ATTACK_DEFENSE_LIMIT) {
-        violations.push(`• ${faction} атакует ${counts.attacks} раз (макс. ${DAILY_ATTACK_DEFENSE_LIMIT})`);
+        violations.push(`•  ${faction} атакует ${counts.attacks} раз (макс. ${DAILY_ATTACK_DEFENSE_LIMIT})`);
       }
       if (counts.defenses > DAILY_ATTACK_DEFENSE_LIMIT) {
-        violations.push(`• ${faction} защищается ${counts.defenses} раз (макс. ${DAILY_ATTACK_DEFENSE_LIMIT})`);
+        violations.push(`•  ${faction} защищается ${counts.defenses} раз (макс. ${DAILY_ATTACK_DEFENSE_LIMIT})`);
       }
     }
     if (violations.length) {
-      lines.push(`<@&${destination.pingRoleId}> ПРЕВЫШЕНИЕ ЛИМИТОВ!`);
+      lines.push("");
+      lines.push(DIVIDER);
+      lines.push(`<@&${destination.pingRoleId}>  ⚠️ **ПРЕВЫШЕНИЕ ЛИМИТОВ!**`);
       lines.push(...violations);
-    } else {
-      // Drop the trailing divider when there's nothing after it.
-      lines.pop();
     }
-  } else {
-    lines.pop();
   }
+  lines.push(DIVIDER);
 
   return lines.join("\n");
 }

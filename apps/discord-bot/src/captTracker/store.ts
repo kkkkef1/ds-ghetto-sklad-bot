@@ -27,6 +27,8 @@ export interface CaptRecord {
   /** The id of the source report message — stable and unique, used as the record key. */
   id: string;
   dayKey: string;
+  /** The report's own "Номер забива" field, when present — used to detect a duplicate repost of the same capture (see recordCapt). */
+  captNumber: string | null;
   attacker: string;
   defender: string;
   canceled: boolean;
@@ -91,13 +93,34 @@ export function getDayCounts(dayKey: string): Record<string, FactionDayCounts> {
   return data.days[dayKey] ?? {};
 }
 
+/**
+ * Looks up an existing, non-canceled record for the same day + capt number —
+ * used to detect a duplicate repost of the same capture (the relay has been
+ * seen sending the same report as two separate messages) before recording
+ * it a second time. Captures with no "Номер забива" field (captNumber null)
+ * are never deduplicated this way, since null would otherwise match every
+ * other captureless record for the day.
+ */
+export function findRecordByCaptNumber(dayKey: string, captNumber: string): CaptRecord | undefined {
+  return Object.values(data.records).find(
+    (r) => r.dayKey === dayKey && r.captNumber === captNumber && !r.canceled
+  );
+}
+
 /** Records a new capture: +1 attack for the attacker, +1 defense for the defender. */
-export function recordCapt(id: string, dayKey: string, attacker: string, defender: string): CaptRecord {
+export function recordCapt(
+  id: string,
+  dayKey: string,
+  attacker: string,
+  defender: string,
+  captNumber: string | null
+): CaptRecord {
   ensureFaction(dayKey, attacker).attacks += 1;
   ensureFaction(dayKey, defender).defenses += 1;
   const record: CaptRecord = {
     id,
     dayKey,
+    captNumber,
     attacker,
     defender,
     canceled: false,
