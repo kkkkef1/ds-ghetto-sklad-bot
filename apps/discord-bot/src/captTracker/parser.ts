@@ -64,9 +64,26 @@ const LABEL_PATTERNS = [...KNOWN_LABELS]
     regex: new RegExp(`^[^\\p{L}]*${escapeRegExp(label)}:+\\s*(.*)$`, "u"),
   }));
 
-/** Strips Discord inline-code backticks (and surrounding whitespace) some fields arrive wrapped in. */
+/**
+ * Strips Discord decoration (inline-code backticks, bold/italic asterisks
+ * or underscores, strikethrough tildes) and surrounding whitespace some
+ * field values arrive wrapped in — the relay has been seen sending values
+ * as plain `` `Bloods` ``, but also bolded as `` **`Bloods`** ``. Applied
+ * to every captured field value (not just attacker/defender), so a stray
+ * "**" never ends up baked into a stored value — e.g. as part of a faction
+ * name, which would silently create a bogus extra faction bucket in the
+ * day's tally instead of matching the real one.
+ */
 function stripMarkdown(value: string): string {
-  return value.trim().replace(/^`+/, "").replace(/`+$/, "").trim();
+  let v = value.trim();
+  // Peel decoration off both ends repeatedly — stacked markers like
+  // "**`value`**" need more than one pass to fully unwrap.
+  for (let i = 0; i < 3; i++) {
+    const before = v;
+    v = v.replace(/^[*_~`]+/, "").replace(/[*_~`]+$/, "").trim();
+    if (v === before) break;
+  }
+  return v;
 }
 
 export interface ParsedCaptMessage {
@@ -113,7 +130,7 @@ export function parseCaptMessage(text: string): ParsedCaptMessage | null {
   let buffer: string[] = [];
 
   const flush = () => {
-    if (currentLabel) fields[currentLabel] = buffer.join(" ").trim();
+    if (currentLabel) fields[currentLabel] = stripMarkdown(buffer.join(" "));
     buffer = [];
   };
 
@@ -130,8 +147,8 @@ export function parseCaptMessage(text: string): ParsedCaptMessage | null {
   }
   flush();
 
-  const attacker = stripMarkdown(fields["Атака"] ?? "");
-  const defender = stripMarkdown(fields["Защита"] ?? "");
+  const attacker = fields["Атака"] ?? "";
+  const defender = fields["Защита"] ?? "";
   if (!attacker || !defender) return null;
 
   return {
