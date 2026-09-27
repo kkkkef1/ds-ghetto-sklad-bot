@@ -107,11 +107,13 @@ export async function analyzeConsumables(
   timeWindow: number
 ): Promise<Record<string, AmmoMatch[]>> {
   const results: Record<string, AmmoMatch[]> = {};
-  // Ticked per take-event below: for each take we scan the unused gives of
-  // its item type looking for the closest one within the time window, so a
-  // player with thousands of take/give events costs roughly takes × gives —
-  // exactly the kind of loop a single huge paste can blow up.
+  // Ticked per take-event below (and periodically inside the inner give
+  // scan too): for each take we scan the unused gives of its item type
+  // looking for the closest one within the time window, so a player with
+  // thousands of take/give events costs roughly takes × gives — exactly
+  // the kind of loop a single huge paste can blow up.
   const yielder = new Yielder();
+  const INNER_TICK_EVERY = 500; // tick the inner give-scan periodically, not every iteration, to avoid overhead swamping small scans
 
   for (const [pid, takesList] of Object.entries(takes)) {
     const givesList = gives[pid] ?? [];
@@ -140,33 +142,47 @@ export async function analyzeConsumables(
       const giveSorted = [...giveEvents].sort((a, b) => a.datetime.localeCompare(b.datetime));
       const usedGives = new Set<number>();
       const giveTimesMs = giveSorted.map(g => parseDateTime(g.datetime).getTime());
+      const takeTimesMs = takeSorted.map(t => parseDateTime(t.datetime).getTime());
 
-      const tbd: Record<string, number[]> = {};
-      for (const tr of takesRawList) {
-        if ((tr.item_type ?? "x") !== itemType) continue;
-        const ms = parseDateTime(tr.datetime).getTime();
-        const ds = new Date(ms).toDateString();
-        if (!tbd[ds]) tbd[ds] = [];
-        tbd[ds].push(ms);
-      }
+      // Raw "took back from placement" events for this item type, sorted
+      // once so each take can binary/linear-scan just its own slice instead
+      // of bucketing by calendar day. Bucketing by day mirrored the same
+      // class of bug as PlayerCase's global-min/max collapse: a retrieval
+      // that actually belongs to a *later* take/give cycle (same day) could
+      // get attributed to an earlier, still-open cycle, hiding a real leak
+      // — or, conversely, a late-night cycle spanning midnight could miss
+      // its own retrieval entirely because it fell on the "next" day's
+      // bucket. Scoping the check to strictly between this cycle's give and
+      // the start of the player's *next* take of the same item (rather than
+      // "same calendar day") fixes both directions.
+      const takebacksMs = takesRawList
+        .filter(tr => (tr.item_type ?? "x") === itemType)
+        .map(tr => parseDateTime(tr.datetime).getTime())
+        .filter(ms => !isNaN(ms))
+        .sort((a, b) => a - b);
 
-      for (const takeEvent of takeSorted) {
+      for (let ti = 0; ti < takeSorted.length; ti++) {
+        const takeEvent = takeSorted[ti];
         await yielder.tick();
-        const takeDt = parseDateTime(takeEvent.datetime).getTime();
+        const takeDt = takeTimesMs[ti];
         if (isNaN(takeDt)) continue;
         const takeQty = parseInt(takeEvent.quantity ?? "1") || 1;
-        const takeDateStr = new Date(takeDt).toDateString();
+        // Cycle boundary: retrievals are only relevant if they happen after
+        // this take's give and before the player takes this item type
+        // again (or, for the last take, at any point afterwards).
+        const nextTakeDt = ti + 1 < takeTimesMs.length ? takeTimesMs[ti + 1] : Infinity;
 
         let bestGive: [number, LogEvent] | null = null;
         let bestDiff = Infinity;
 
         for (let idx = 0; idx < giveSorted.length; idx++) {
+          if (idx % INNER_TICK_EVERY === 0) await yielder.tick();
           if (usedGives.has(idx)) continue;
           const giveDt = giveTimesMs[idx];
           if (isNaN(giveDt)) continue;
           const timeDiff = (giveDt - takeDt) / 60000;
           if (timeDiff >= 0 && timeDiff <= timeWindow) {
-            const takenBack = tbd[takeDateStr]?.some(t => t > giveDt) ?? false;
+            const takenBack = takebacksMs.some(t => t > giveDt && t < nextTakeDt);
             if (!takenBack && timeDiff < bestDiff) {
               bestDiff = timeDiff;
               bestGive = [idx, giveSorted[idx]];

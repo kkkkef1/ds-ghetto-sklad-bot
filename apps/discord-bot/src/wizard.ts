@@ -54,10 +54,24 @@ function stopOnAbort(signal: AbortSignal, stop: () => void): () => void {
   return () => signal.removeEventListener("abort", onAbort);
 }
 
+// Per-file cap, checked from the attachment's reported size *before*
+// downloading it — this used to only be enforced afterwards, on the sum of
+// everything collected across the whole step (session.placementLogs.reduce),
+// which meant a user could finish uploading several huge files (each fully
+// fetched and buffered in memory) before the size check ever fired. Rejecting
+// per-file, up front, means an oversized file is never downloaded at all.
+const MAX_ATTACHMENT_BYTES = 50_000_000;
+
 async function readAttachmentOrContent(message: Message): Promise<string[]> {
   const parts: string[] = [];
   if (message.attachments.size) {
     for (const att of message.attachments.values()) {
+      if (att.size > MAX_ATTACHMENT_BYTES) {
+        await message.reply(
+          `⚠️ Файл \`${att.name}\` слишком большой (≈${(att.size / 1_000_000).toFixed(1)} МБ, лимит ${MAX_ATTACHMENT_BYTES / 1_000_000} МБ) — пропущен. Разбейте его на части поменьше.`
+        );
+        continue;
+      }
       try {
         const res = await fetch(att.url);
         parts.push(await res.text());
@@ -143,6 +157,19 @@ function collectMultiText(
         try {
           const skip = interaction.customId === "wizard_skip";
           await interaction.deferUpdate();
+          if (!skip && pendingReads.length) {
+            // Give immediate visible feedback: without this, the button
+            // shows Discord's own few-second "thinking" spinner and then
+            // goes quiet again while large files are still downloading —
+            // indistinguishable from the click not registering, which is
+            // what led people to mash the button several times. Editing the
+            // message right away (before awaiting the reads) makes it clear
+            // the click landed and a second click isn't needed.
+            await promptMsg.edit({
+              content: "⏳ Обрабатываю присланные файлы, подождите — повторно нажимать кнопку не нужно.",
+              components: [],
+            }).catch(() => {});
+          }
           if (!skip) await Promise.all(pendingReads);
           await promptMsg.edit({
             content: skip ? "Пропущено." : `Принято: ${collected.length} сообщение(й)/файл(ов).`,
