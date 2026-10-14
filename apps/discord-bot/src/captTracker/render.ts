@@ -1,9 +1,9 @@
 // ===================== CAPT MESSAGE RENDERING =====================
 
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
-import { DAILY_ATTACK_DEFENSE_LIMIT, type CaptDestination } from "./config.js";
+import { DAILY_ATTACK_DEFENSE_LIMIT, DESTINATIONS, type CaptDestination } from "./config.js";
 import { CANCEL_BUTTON_PREFIX } from "./constants.js";
-import type { FactionDayCounts } from "./store.js";
+import { getPingRoleOverride, type FactionDayCounts } from "./store.js";
 
 const DIVIDER = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 // Placeholder emoji for "attack"/"defense" — swap for whatever the server
@@ -11,15 +11,55 @@ const DIVIDER = "━━━━━━━━━━━━━━━━━━━━━
 const ATTACK_EMOJI = "⚔️";
 const DEFENSE_EMOJI = "🛡️";
 
+/** The role to ping on a violation for this destination: the one set via /capt set-role, else the config default. */
+export function getPingRoleId(destination: CaptDestination): string {
+  return getPingRoleOverride(destination.guildId) ?? destination.pingRoleId;
+}
+
+/** The destination configured for a given guild, if the bot mirrors capts there. */
+export function findDestinationByGuild(guildId: string | null): CaptDestination | undefined {
+  return guildId ? DESTINATIONS.find((d) => d.guildId === guildId) : undefined;
+}
+
+type DayCounts = Record<string, FactionDayCounts>;
+
+function pushFactionLines(lines: string[], dayCounts: DayCounts) {
+  for (const [faction, counts] of Object.entries(dayCounts)) {
+    lines.push(`•  **${faction}**`);
+    lines.push(`　${ATTACK_EMOJI} атаки: **${counts.attacks}**　　${DEFENSE_EMOJI} защиты: **${counts.defenses}**`);
+    lines.push("");
+  }
+  // Drop the extra trailing blank line after the last faction.
+  if (lines[lines.length - 1] === "") lines.pop();
+}
+
+function collectViolations(dayCounts: DayCounts): string[] {
+  const violations: string[] = [];
+  for (const [faction, counts] of Object.entries(dayCounts)) {
+    if (counts.attacks > DAILY_ATTACK_DEFENSE_LIMIT) {
+      violations.push(`•  ${faction} атакует ${counts.attacks} раз (макс. ${DAILY_ATTACK_DEFENSE_LIMIT})`);
+    }
+    if (counts.defenses > DAILY_ATTACK_DEFENSE_LIMIT) {
+      violations.push(`•  ${faction} защищается ${counts.defenses} раз (макс. ${DAILY_ATTACK_DEFENSE_LIMIT})`);
+    }
+  }
+  return violations;
+}
+
 export interface BuildCaptContentOptions {
   attacker: string;
   defender: string;
-  dayCounts: Record<string, FactionDayCounts>;
+  dayCounts: DayCounts;
   destination: CaptDestination;
   /** True once this capt has been rolled back via the button. */
   canceled?: boolean;
 }
 
+/**
+ * The warning block is always derived from the *current* counts, so after a
+ * cancel it disappears by itself as soon as nobody is over the limit any more
+ * (and stays, with the corrected numbers, if someone still is).
+ */
 export function buildCaptContent(opts: BuildCaptContentOptions): string {
   const { attacker, defender, dayCounts, destination, canceled } = opts;
 
@@ -34,34 +74,49 @@ export function buildCaptContent(opts: BuildCaptContentOptions): string {
   lines.push("");
   lines.push("**Сводка за день:**");
   lines.push("");
-  for (const [faction, counts] of Object.entries(dayCounts)) {
-    lines.push(`•  **${faction}**`);
-    lines.push(`　${ATTACK_EMOJI} атаки: **${counts.attacks}**　　${DEFENSE_EMOJI} защиты: **${counts.defenses}**`);
-    lines.push("");
-  }
-  // Drop the extra trailing blank line after the last faction.
-  if (lines[lines.length - 1] === "") lines.pop();
+  pushFactionLines(lines, dayCounts);
 
-  if (!canceled) {
-    const violations: string[] = [];
-    for (const [faction, counts] of Object.entries(dayCounts)) {
-      if (counts.attacks > DAILY_ATTACK_DEFENSE_LIMIT) {
-        violations.push(`•  ${faction} атакует ${counts.attacks} раз (макс. ${DAILY_ATTACK_DEFENSE_LIMIT})`);
-      }
-      if (counts.defenses > DAILY_ATTACK_DEFENSE_LIMIT) {
-        violations.push(`•  ${faction} защищается ${counts.defenses} раз (макс. ${DAILY_ATTACK_DEFENSE_LIMIT})`);
-      }
-    }
+  const violations = collectViolations(dayCounts);
+  if (violations.length) {
+    lines.push("");
+    lines.push(DIVIDER);
+    lines.push(`<@&${getPingRoleId(destination)}>  ⚠️ **ПРЕВЫШЕНИЕ ЛИМИТОВ!**`);
+    lines.push(...violations);
+  }
+  lines.push(DIVIDER);
+
+  return lines.join("\n");
+}
+
+/** Standalone "current capt count" message for the /capt summary command — same look, no ping. */
+export function buildSummaryContent(dayKey: string, dayCounts: DayCounts): string {
+  const lines: string[] = [];
+  lines.push(DIVIDER);
+  lines.push(`📊 **Сводка каптов за ${formatDayKey(dayKey)}**`);
+  lines.push(DIVIDER);
+  lines.push("");
+
+  if (!Object.keys(dayCounts).length) {
+    lines.push("Сегодня каптов ещё не было.");
+  } else {
+    pushFactionLines(lines, dayCounts);
+    const violations = collectViolations(dayCounts);
     if (violations.length) {
       lines.push("");
       lines.push(DIVIDER);
-      lines.push(`<@&${destination.pingRoleId}>  ⚠️ **ПРЕВЫШЕНИЕ ЛИМИТОВ!**`);
+      lines.push("⚠️ **ПРЕВЫШЕНИЕ ЛИМИТОВ!**");
       lines.push(...violations);
     }
   }
   lines.push(DIVIDER);
 
   return lines.join("\n");
+}
+
+/** "2026-10-14" -> "14.10.2026" */
+function formatDayKey(dayKey: string): string {
+  const m = dayKey.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : dayKey;
 }
 
 export function buildCancelRow(recordId: string, disabled = false): ActionRowBuilder<ButtonBuilder> {

@@ -23,7 +23,11 @@ export interface CaptDestination {
   key: "server1" | "server2";
   guildId: string;
   channelId: string;
-  /** Role pinged when a faction goes over the daily limit, and allowed to press "Отменить капт". */
+  /**
+   * DEFAULT role pinged when a faction goes over the daily limit. The creator can
+   * override it at runtime with `/capt set-role` (saved in the store) — use
+   * `getPingRoleId()` from store-aware code instead of reading this directly.
+   */
   pingRoleId: string;
 }
 

@@ -39,13 +39,15 @@ export interface CaptRecord {
 interface StoreData {
   days: Record<string, Record<string, FactionDayCounts>>; // dayKey -> faction -> counts
   records: Record<string, CaptRecord>; // recordId -> record
-  helpers: string[]; // user ids allowed to use admin/status commands and the cancel button
+  helpers: string[]; // user ids allowed to use admin/status commands
+  /** guildId -> role id pinged on limit violations; overrides the default in config.ts (set via /capt set-role). */
+  pingRoles: Record<string, string>;
 }
 
 const DATA_FILE = process.env.CAPT_DATA_FILE || `${process.cwd()}/data/capt-store.json`;
 
 function emptyStore(): StoreData {
-  return { days: {}, records: {}, helpers: [] };
+  return { days: {}, records: {}, helpers: [], pingRoles: {} };
 }
 
 function load(): StoreData {
@@ -57,6 +59,7 @@ function load(): StoreData {
         days: parsed.days ?? {},
         records: parsed.records ?? {},
         helpers: Array.isArray(parsed.helpers) ? parsed.helpers : [],
+        pingRoles: parsed.pingRoles && typeof parsed.pingRoles === "object" ? parsed.pingRoles : {},
       };
     }
   } catch (err) {
@@ -229,4 +232,16 @@ export function removeHelper(userId: string): boolean {
   data.helpers.splice(idx, 1);
   persist();
   return true;
+}
+
+// ---- ping roles (changed by the creator via /capt set-role) ----
+
+/** Role id saved for a server via /capt set-role, or undefined if none was ever set (config default applies). */
+export function getPingRoleOverride(guildId: string): string | undefined {
+  return data.pingRoles[guildId];
+}
+
+export function setPingRoleOverride(guildId: string, roleId: string) {
+  data.pingRoles[guildId] = roleId;
+  persist();
 }

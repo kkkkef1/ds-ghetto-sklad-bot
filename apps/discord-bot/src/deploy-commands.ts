@@ -53,6 +53,26 @@ async function main() {
 
   await rest.put(route, { body: commands });
   console.log(`Зарегистрировано команд: ${commands.length} (${cliGuildId ? `guild ${cliGuildId}, мгновенно` : "глобально, обновление до ~1 часа"}).`);
+
+  // Why every command showed up twice in the picker: the same commands were
+  // registered globally AND, at some point, per-guild (an old `--guild` /
+  // DISCORD_GUILD_ID deploy). Discord treats those as two separate sets and
+  // lists both. A global deploy therefore also wipes the guild-scoped copies
+  // on every server the bot is on, leaving only the global ones.
+  // (Skipped for a one-off `--guild` deploy — there guild commands are the point.)
+  if (!cliGuildId) {
+    const guilds = (await rest.get(Routes.userGuilds())) as { id: string; name: string }[];
+    for (const guild of guilds) {
+      try {
+        const existing = (await rest.get(Routes.applicationGuildCommands(clientId, guild.id))) as unknown[];
+        if (!existing.length) continue;
+        await rest.put(Routes.applicationGuildCommands(clientId, guild.id), { body: [] });
+        console.log(`Удалены дублирующие команды сервера «${guild.name}» (${existing.length} шт.).`);
+      } catch (err) {
+        console.warn(`Не удалось очистить серверные команды для «${guild.name}» (${guild.id}):`, err);
+      }
+    }
+  }
 }
 
 main().catch((err) => {

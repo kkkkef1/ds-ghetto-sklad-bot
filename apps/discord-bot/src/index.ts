@@ -45,6 +45,17 @@ client.once(Events.ClientReady, (c) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isAutocomplete()) {
+    if (interaction.commandName === captAdmin.data.name) {
+      try {
+        await captAdmin.autocomplete(interaction);
+      } catch (err) {
+        console.error("[discord-bot] Autocomplete failed:", err);
+      }
+    }
+    return;
+  }
+
   if (interaction.isChatInputCommand()) {
     const command = commands.get(interaction.commandName);
     if (!command) return;
@@ -70,8 +81,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     } catch (err) {
       console.error("[discord-bot] Не удалось обработать отмену капта:", err);
       const payload = { content: "Произошла ошибка при отмене капта.", ephemeral: true } as const;
+      // After deferUpdate() an editReply would overwrite the capt message itself
+      // with the error text — a followUp is a separate ephemeral note instead.
       if (interaction.deferred || interaction.replied) {
-        await interaction.editReply(payload).catch(() => {});
+        await interaction.followUp(payload).catch(() => {});
       } else {
         await interaction.reply(payload).catch(() => {});
       }
