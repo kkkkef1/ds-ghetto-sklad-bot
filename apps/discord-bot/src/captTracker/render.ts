@@ -1,25 +1,15 @@
 // ===================== CAPT MESSAGE RENDERING =====================
 
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
-import { DAILY_ATTACK_DEFENSE_LIMIT, DESTINATIONS, type CaptDestination } from "./config.js";
+import { DAILY_ATTACK_DEFENSE_LIMIT } from "./config.js";
 import { CANCEL_BUTTON_PREFIX } from "./constants.js";
-import { getPingRoleOverride, type FactionDayCounts } from "./store.js";
+import type { FactionDayCounts } from "./store.js";
 
 const DIVIDER = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 // Placeholder emoji for "attack"/"defense" — swap for whatever the server
 // actually uses (a custom emoji works too, e.g. "<:atk:123456789012345678>").
 const ATTACK_EMOJI = "⚔️";
 const DEFENSE_EMOJI = "🛡️";
-
-/** The role to ping on a violation for this destination: the one set via /capt set-role, else the config default. */
-export function getPingRoleId(destination: CaptDestination): string {
-  return getPingRoleOverride(destination.guildId) ?? destination.pingRoleId;
-}
-
-/** The destination configured for a given guild, if the bot mirrors capts there. */
-export function findDestinationByGuild(guildId: string | null): CaptDestination | undefined {
-  return guildId ? DESTINATIONS.find((d) => d.guildId === guildId) : undefined;
-}
 
 type DayCounts = Record<string, FactionDayCounts>;
 
@@ -50,7 +40,8 @@ export interface BuildCaptContentOptions {
   attacker: string;
   defender: string;
   dayCounts: DayCounts;
-  destination: CaptDestination;
+  /** Роль для пинга при превышении лимита на этом сервере; null — без пинга. */
+  pingRoleId: string | null;
   /** True once this capt has been rolled back via the button. */
   canceled?: boolean;
 }
@@ -61,7 +52,7 @@ export interface BuildCaptContentOptions {
  * (and stays, with the corrected numbers, if someone still is).
  */
 export function buildCaptContent(opts: BuildCaptContentOptions): string {
-  const { attacker, defender, dayCounts, destination, canceled } = opts;
+  const { attacker, defender, dayCounts, pingRoleId, canceled } = opts;
 
   const lines: string[] = [];
   lines.push(DIVIDER);
@@ -80,7 +71,7 @@ export function buildCaptContent(opts: BuildCaptContentOptions): string {
   if (violations.length) {
     lines.push("");
     lines.push(DIVIDER);
-    lines.push(`<@&${getPingRoleId(destination)}>  ⚠️ **ПРЕВЫШЕНИЕ ЛИМИТОВ!**`);
+    lines.push(`${pingRoleId ? `<@&${pingRoleId}>  ` : ""}⚠️ **ПРЕВЫШЕНИЕ ЛИМИТОВ!**`);
     lines.push(...violations);
   }
   lines.push(DIVIDER);

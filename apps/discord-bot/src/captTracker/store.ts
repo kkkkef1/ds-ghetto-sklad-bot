@@ -11,6 +11,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { DEFAULT_SOURCE_CHANNEL_ID, INITIAL_DESTINATIONS, type CaptDestination } from "./config.js";
 
 export interface FactionDayCounts {
   attacks: number;
@@ -36,30 +37,62 @@ export interface CaptRecord {
   mirrors: CaptMirrorRef[];
 }
 
+export interface DestinationSettings {
+  channelId: string;
+  /** Роль для пинга при превышении лимита; null — не пинговать. */
+  pingRoleId: string | null;
+}
+
 interface StoreData {
   days: Record<string, Record<string, FactionDayCounts>>; // dayKey -> faction -> counts
   records: Record<string, CaptRecord>; // recordId -> record
   helpers: string[]; // user ids allowed to use admin/status commands
-  /** guildId -> role id pinged on limit violations; overrides the default in config.ts (set via /capt set-role). */
-  pingRoles: Record<string, string>;
+  /** guildId -> куда слать сообщения о каптах на этом сервере (меняется через /capt set-channel, set-role). */
+  destinations: Record<string, DestinationSettings>;
+  /** Канал, из которого читаем забивы (меняется через /capt set-source). */
+  sourceChannelId: string;
 }
 
 const DATA_FILE = process.env.CAPT_DATA_FILE || `${process.cwd()}/data/capt-store.json`;
 
-function emptyStore(): StoreData {
-  return { days: {}, records: {}, helpers: [], pingRoles: {} };
+function initialDestinations(legacyPingRoles: Record<string, string> = {}): Record<string, DestinationSettings> {
+  const result: Record<string, DestinationSettings> = {};
+  for (const d of INITIAL_DESTINATIONS) {
+    result[d.guildId] = { channelId: d.channelId, pingRoleId: legacyPingRoles[d.guildId] ?? d.pingRoleId };
+  }
+  return result;
 }
+
+function emptyStore(): StoreData {
+  return {
+    days: {},
+    records: {},
+    helpers: [],
+    destinations: initialDestinations(),
+    sourceChannelId: DEFAULT_SOURCE_CHANNEL_ID,
+  };
+}
+
+/** true, если при загрузке пришлось дописать новые разделы (миграция старого файла) — тогда файл сохраняется сразу. */
+let migrated = false;
 
 function load(): StoreData {
   try {
     if (existsSync(DATA_FILE)) {
       const raw = readFileSync(DATA_FILE, "utf-8");
       const parsed = JSON.parse(raw);
+      const hasDestinations = parsed.destinations && typeof parsed.destinations === "object";
+      // Старый формат: каналы были в config.ts, а в файле лежал только pingRoles —
+      // переносим всё в destinations, чтобы ничего не потерять при обновлении.
+      const legacyPingRoles =
+        parsed.pingRoles && typeof parsed.pingRoles === "object" ? (parsed.pingRoles as Record<string, string>) : {};
+      if (!hasDestinations || typeof parsed.sourceChannelId !== "string") migrated = true;
       return {
         days: parsed.days ?? {},
         records: parsed.records ?? {},
         helpers: Array.isArray(parsed.helpers) ? parsed.helpers : [],
-        pingRoles: parsed.pingRoles && typeof parsed.pingRoles === "object" ? parsed.pingRoles : {},
+        destinations: hasDestinations ? parsed.destinations : initialDestinations(legacyPingRoles),
+        sourceChannelId: typeof parsed.sourceChannelId === "string" ? parsed.sourceChannelId : DEFAULT_SOURCE_CHANNEL_ID,
       };
     }
   } catch (err) {
@@ -84,6 +117,8 @@ function persist() {
     }
   });
 }
+
+if (migrated) persist();
 
 function ensureFaction(dayKey: string, faction: string): FactionDayCounts {
   const day = (data.days[dayKey] ??= {});
@@ -234,14 +269,51 @@ export function removeHelper(userId: string): boolean {
   return true;
 }
 
-// ---- ping roles (changed by the creator via /capt set-role) ----
+// ---- настройки: куда слать каптах и откуда читать (меняются создателем) ----
 
-/** Role id saved for a server via /capt set-role, or undefined if none was ever set (config default applies). */
-export function getPingRoleOverride(guildId: string): string | undefined {
-  return data.pingRoles[guildId];
+/** Все серверы, куда бот сейчас отправляет сообщения о каптах. */
+export function getDestinations(): CaptDestination[] {
+  return Object.entries(data.destinations).map(([guildId, d]) => ({
+    guildId,
+    channelId: d.channelId,
+    pingRoleId: d.pingRoleId,
+  }));
 }
 
-export function setPingRoleOverride(guildId: string, roleId: string) {
-  data.pingRoles[guildId] = roleId;
+export function getDestination(guildId: string): CaptDestination | undefined {
+  const d = data.destinations[guildId];
+  return d ? { guildId, channelId: d.channelId, pingRoleId: d.pingRoleId } : undefined;
+}
+
+/** Задаёт канал для сервера (если сервера ещё не было в списке — добавляет без роли). */
+export function setDestinationChannel(guildId: string, channelId: string) {
+  const existing = data.destinations[guildId];
+  data.destinations[guildId] = { channelId, pingRoleId: existing?.pingRoleId ?? null };
+  persist();
+}
+
+/** Задаёт роль для пинга (null — убрать). Возвращает false, если для сервера ещё не задан канал. */
+export function setDestinationRole(guildId: string, roleId: string | null): boolean {
+  const existing = data.destinations[guildId];
+  if (!existing) return false;
+  existing.pingRoleId = roleId;
+  persist();
+  return true;
+}
+
+/** Перестаёт слать сообщения на этот сервер. */
+export function removeDestination(guildId: string): boolean {
+  if (!data.destinations[guildId]) return false;
+  delete data.destinations[guildId];
+  persist();
+  return true;
+}
+
+export function getSourceChannelId(): string {
+  return data.sourceChannelId;
+}
+
+export function setSourceChannelId(channelId: string) {
+  data.sourceChannelId = channelId;
   persist();
 }

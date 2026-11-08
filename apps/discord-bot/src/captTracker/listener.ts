@@ -7,14 +7,14 @@
 // on the capture being attempted, not on who won.
 
 import { Events, type Client, type Message } from "discord.js";
-import { SOURCE } from "./config.js";
+import { MAIN_GUILD_ID } from "./config.js";
 import { dayKeyFromDateTime, extractFullText, parseCaptMessage } from "./parser.js";
 import { publishCapt } from "./mirror.js";
-import { findRecordByCaptNumber, recordCapt } from "./store.js";
+import { findRecordByCaptNumber, getSourceChannelId, recordCapt } from "./store.js";
 
 export function registerCaptListener(client: Client): void {
   client.on(Events.MessageCreate, async (message: Message) => {
-    if (message.guildId !== SOURCE.guildId || message.channelId !== SOURCE.channelId) return;
+    if (message.guildId !== MAIN_GUILD_ID || message.channelId !== getSourceChannelId()) return;
 
     const text = extractFullText(message);
     const parsed = parseCaptMessage(text);

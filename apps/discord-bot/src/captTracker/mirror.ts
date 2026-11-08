@@ -1,9 +1,8 @@
 // ===================== MIRRORING TO BOTH SERVERS =====================
 
 import type { ButtonInteraction, Client, TextChannel } from "discord.js";
-import { DESTINATIONS } from "./config.js";
-import { buildCancelRow, buildCaptContent, getPingRoleId } from "./render.js";
-import { attachMirror, cancelCapt, getDayCounts, getRecord, type CaptRecord } from "./store.js";
+import { buildCancelRow, buildCaptContent } from "./render.js";
+import { attachMirror, cancelCapt, getDayCounts, getDestination, getDestinations, getRecord, type CaptRecord } from "./store.js";
 
 /** Sends the new-capt summary to both destination channels and remembers the resulting message ids. */
 export async function publishCapt(
@@ -15,7 +14,7 @@ export async function publishCapt(
 ): Promise<void> {
   const dayCounts = getDayCounts(dayKey);
 
-  for (const destination of DESTINATIONS) {
+  for (const destination of getDestinations()) {
     try {
       const channel = await client.channels.fetch(destination.channelId);
       if (!channel || !channel.isTextBased()) {
@@ -23,11 +22,11 @@ export async function publishCapt(
         continue;
       }
 
-      const content = buildCaptContent({ attacker, defender, dayCounts, destination });
+      const content = buildCaptContent({ attacker, defender, dayCounts, pingRoleId: destination.pingRoleId });
       const message = await (channel as TextChannel).send({
         content,
         components: [buildCancelRow(recordId)],
-        allowedMentions: { roles: [getPingRoleId(destination)] },
+        allowedMentions: { roles: destination.pingRoleId ? [destination.pingRoleId] : [] },
       });
 
       attachMirror(recordId, {
@@ -141,24 +140,28 @@ async function editWithRetry(
 export async function refreshCaptMessages(
   client: Client,
   record: CaptRecord,
-  extraMessage?: { channelId: string; messageId: string }
+  extraMessage?: { guildId: string | null; channelId: string; messageId: string }
 ): Promise<void> {
   const dayCounts = getDayCounts(record.dayKey);
-  const targets = record.mirrors.map((m) => ({ channelId: m.channelId, messageId: m.messageId }));
+  const targets: { guildId: string | null; channelId: string; messageId: string }[] = record.mirrors.map((m) => ({
+    guildId: m.guildId,
+    channelId: m.channelId,
+    messageId: m.messageId,
+  }));
   // The message that was actually clicked might not be in record.mirrors (e.g. a
   // mirror that failed to register) — make sure it is refreshed too.
   if (extraMessage && !targets.some((t) => t.messageId === extraMessage.messageId)) targets.push(extraMessage);
 
   await Promise.all(
     targets.map(async (target) => {
-      const destination = DESTINATIONS.find((d) => d.channelId === target.channelId);
-      if (!destination) return;
+      // Роль берём из ТЕКУЩИХ настроек сервера — если её сменили или убрали, сообщение перерисуется уже с новой.
+      const pingRoleId = (target.guildId ? getDestination(target.guildId)?.pingRoleId : null) ?? null;
 
       const content = buildCaptContent({
         attacker: record.attacker,
         defender: record.defender,
         dayCounts,
-        destination,
+        pingRoleId,
         canceled: record.canceled,
       });
       const ok = await editWithRetry(client, target.channelId, target.messageId, {
@@ -199,6 +202,7 @@ export async function handleCancelButton(interaction: ButtonInteraction, recordI
   refreshing.add(recordId);
   try {
     await refreshCaptMessages(interaction.client, record, {
+      guildId: interaction.guildId,
       channelId: interaction.channelId,
       messageId: interaction.message.id,
     });

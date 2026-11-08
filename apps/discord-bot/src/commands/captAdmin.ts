@@ -1,16 +1,30 @@
-import { SlashCommandBuilder, type AutocompleteInteraction, type ChatInputCommandInteraction } from "discord.js";
-import { CREATOR_ID, DAILY_ATTACK_DEFENSE_LIMIT, DESTINATIONS } from "../captTracker/config.js";
+import {
+  ChannelType,
+  PermissionFlagsBits,
+  SlashCommandBuilder,
+  type AutocompleteInteraction,
+  type ChatInputCommandInteraction,
+  type Client,
+} from "discord.js";
+import { CREATOR_ID, DAILY_ATTACK_DEFENSE_LIMIT, MAIN_GUILD_ID } from "../captTracker/config.js";
 import { dayKeyFromDate, dayKeyFromDateString } from "../captTracker/parser.js";
 import { buildSummaryContent } from "../captTracker/render.js";
 import {
   addHelper,
   getDayCounts,
+  getDestinations,
   getHelpers,
+  getSourceChannelId,
+  removeDestination,
   removeHelper,
   resetDay,
+  setDestinationChannel,
+  setDestinationRole,
   setFactionCounts,
-  setPingRoleOverride,
+  setSourceChannelId,
 } from "../captTracker/store.js";
+
+const SERVER_OPTION_DESC = "Сервер, где есть бот (выберите из подсказок)";
 
 export const data = new SlashCommandBuilder()
   .setName("capt")
@@ -29,21 +43,57 @@ export const data = new SlashCommandBuilder()
       .addStringOption((o) => o.setName("id").setDescription("Discord ID пользователя").setRequired(true))
   )
   .addSubcommand((sc) => sc.setName("helpers").setDescription("Показать список помощников"))
-  .addSubcommand((sc) => sc.setName("status").setDescription("Сводка каптов за сегодня по всем фракциям"))
   .addSubcommand((sc) =>
     sc.setName("summary").setDescription("Отправить в чат сообщение с актуальным количеством каптов за сегодня")
   )
   .addSubcommand((sc) =>
+    sc.setName("settings").setDescription("Показать текущие настройки: канал-источник, каналы и роли по серверам")
+  )
+  .addSubcommand((sc) =>
+    sc
+      .setName("set-channel")
+      .setDescription("Задать канал, куда бот шлёт сообщения о каптах на выбранном сервере (только создатель)")
+      .addStringOption((o) =>
+        o.setName("server").setDescription(SERVER_OPTION_DESC).setRequired(true).setAutocomplete(true)
+      )
+      .addStringOption((o) =>
+        o
+          .setName("channel")
+          .setDescription("ID канала (ПКМ по каналу → Копировать ID) или #упоминание")
+          .setRequired(true)
+      )
+  )
+  .addSubcommand((sc) =>
     sc
       .setName("set-role")
-      .setDescription("Сменить роль, которую бот пингует при превышении лимитов (только создатель)")
+      .setDescription("Роль, которую бот пингует при превышении лимитов на сервере (только создатель)")
       .addStringOption((o) =>
-        o.setName("server").setDescription("Сервер, для которого меняем роль").setRequired(true).setAutocomplete(true)
+        o.setName("server").setDescription(SERVER_OPTION_DESC).setRequired(true).setAutocomplete(true)
       )
       .addStringOption((o) =>
         o
           .setName("role")
-          .setDescription("ID роли (ПКМ по роли → Копировать ID) или упоминание @роли")
+          .setDescription("ID роли, @упоминание роли или none — чтобы не пинговать никого")
+          .setRequired(true)
+      )
+  )
+  .addSubcommand((sc) =>
+    sc
+      .setName("remove-channel")
+      .setDescription("Перестать слать сообщения о каптах на выбранный сервер (только создатель)")
+      .addStringOption((o) =>
+        o.setName("server").setDescription(SERVER_OPTION_DESC).setRequired(true).setAutocomplete(true)
+      )
+  )
+  .addSubcommand((sc) =>
+    sc
+      .setName("set-source")
+      .setDescription("Канал на главном сервере, откуда бот читает забивы (только создатель)")
+      .addChannelOption((o) =>
+        o
+          .setName("channel")
+          .setDescription("Канал с забивами")
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
           .setRequired(true)
       )
   )
@@ -60,6 +110,18 @@ export const data = new SlashCommandBuilder()
       )
   );
 
+/** Команды, меняющие настройки/данные: только создатель и только на главном сервере. */
+const CREATOR_SUBCOMMANDS = new Set([
+  "helper-add",
+  "helper-remove",
+  "set-channel",
+  "set-role",
+  "remove-channel",
+  "set-source",
+  "reset-day",
+  "edit-count",
+]);
+
 function isCreator(userId: string): boolean {
   return userId === CREATOR_ID;
 }
@@ -70,7 +132,7 @@ function isCreatorOrHelper(userId: string): boolean {
 
 const ID_PATTERN = /^\d{17,20}$/;
 
-/** Autocomplete for the `server` option of /capt set-role: the servers capts are mirrored to, by their real names. */
+/** Подсказки для поля `server`: все серверы, на которых сейчас есть бот. */
 export async function autocomplete(interaction: AutocompleteInteraction): Promise<void> {
   const focused = interaction.options.getFocused(true);
   if (focused.name !== "server") {
@@ -78,19 +140,32 @@ export async function autocomplete(interaction: AutocompleteInteraction): Promis
     return;
   }
   const query = focused.value.toLowerCase();
-  const choices = DESTINATIONS.map((d) => ({
-    name: (interaction.client.guilds.cache.get(d.guildId)?.name ?? `Сервер ${d.guildId}`).slice(0, 100),
-    value: d.guildId,
-  })).filter((c) => c.name.toLowerCase().includes(query) || c.value.includes(query));
+  const choices = [...interaction.client.guilds.cache.values()]
+    .map((g) => ({ name: g.name.slice(0, 100), value: g.id }))
+    .filter((c) => c.name.toLowerCase().includes(query) || c.value.includes(query))
+    .slice(0, 25);
   await interaction.respond(choices);
+}
+
+/** `server` приходит как id из подсказок; если ввели название руками — ищем по имени среди серверов бота. */
+function resolveGuildId(client: Client, input: string): string | undefined {
+  const value = input.trim();
+  const byId = client.guilds.cache.get(value);
+  if (byId) return byId.id;
+  const lower = value.toLowerCase();
+  return [...client.guilds.cache.values()].find((g) => g.name.toLowerCase() === lower)?.id;
+}
+
+function parseId(input: string, kind: "role" | "channel"): string | null {
+  const mention = kind === "role" ? /^<@&(\d{17,20})>$/ : /^<#(\d{17,20})>$/;
+  const id = (input.trim().match(mention)?.[1] ?? input.trim()).trim();
+  return ID_PATTERN.test(id) ? id : null;
 }
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const sub = interaction.options.getSubcommand();
 
-  // helper-add / helper-remove / reset-day / edit-count / set-role are creator-only
-  // management actions; summary is open to everyone (same as the cancel button);
-  // status/helpers are readable by the creator and any helper.
+  // summary открыта всем (как и кнопка «Отменить капт»).
   if (sub === "summary") {
     const dayKey = dayKeyFromDate(new Date());
     await interaction.reply({
@@ -100,13 +175,13 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  if (
-    sub === "helper-add" ||
-    sub === "helper-remove" ||
-    sub === "reset-day" ||
-    sub === "edit-count" ||
-    sub === "set-role"
-  ) {
+  // Всё остальное — только с главного сервера по настройке.
+  if (interaction.guildId !== MAIN_GUILD_ID) {
+    await interaction.reply({ content: "Настройки доступны только на главном сервере.", ephemeral: true });
+    return;
+  }
+
+  if (CREATOR_SUBCOMMANDS.has(sub)) {
     if (!isCreator(interaction.user.id)) {
       await interaction.reply({ content: "Эта команда доступна только создателю бота.", ephemeral: true });
       return;
@@ -116,41 +191,112 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
+  if (sub === "settings") {
+    const client = interaction.client;
+    const lines: string[] = [`**Канал-источник забивов:** <#${getSourceChannelId()}>`, "", "**Куда шлются сообщения о каптах:**"];
+    const destinations = getDestinations();
+    if (!destinations.length) {
+      lines.push("• пока никуда — задайте через /capt set-channel");
+    }
+    for (const d of destinations) {
+      const name = client.guilds.cache.get(d.guildId)?.name ?? `сервер ${d.guildId} (бота там нет?)`;
+      lines.push(`• **${name}** — канал <#${d.channelId}>, роль ${d.pingRoleId ? `<@&${d.pingRoleId}>` : "не задана (без пинга)"}`);
+    }
+    await interaction.reply({ content: lines.join("\n"), ephemeral: true, allowedMentions: { parse: [] } });
+    return;
+  }
+
+  if (sub === "set-channel") {
+    const guildId = resolveGuildId(interaction.client, interaction.options.getString("server", true));
+    if (!guildId) {
+      await interaction.reply({
+        content: "Не нашёл такой сервер среди серверов бота. Выберите сервер из подсказок поля server.",
+        ephemeral: true,
+      });
+      return;
+    }
+    const channelId = parseId(interaction.options.getString("channel", true), "channel");
+    if (!channelId) {
+      await interaction.reply({ content: "Это не похоже на ID канала.", ephemeral: true });
+      return;
+    }
+
+    try {
+      const guild = await interaction.client.guilds.fetch(guildId);
+      const channel = await guild.channels.fetch(channelId).catch(() => null);
+      if (!channel || !channel.isTextBased()) {
+        await interaction.reply({
+          content: `Текстовый канал с ID ${channelId} не найден на сервере «${guild.name}».`,
+          ephemeral: true,
+        });
+        return;
+      }
+      const me = await guild.members.fetchMe();
+      const perms = channel.permissionsFor(me);
+      if (!perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])) {
+        await interaction.reply({
+          content: `У бота нет прав «Просмотр канала» и «Отправка сообщений» в <#${channel.id}> на сервере «${guild.name}».`,
+          ephemeral: true,
+        });
+        return;
+      }
+      setDestinationChannel(guildId, channel.id);
+      await interaction.reply({
+        content: `Для сервера «${guild.name}» сообщения о каптах теперь идут в <#${channel.id}>.`,
+        ephemeral: true,
+        allowedMentions: { parse: [] },
+      });
+    } catch (err) {
+      console.error("[captTracker] set-channel: не удалось проверить канал:", err);
+      await interaction.reply({ content: "Не удалось проверить канал на этом сервере. Бот точно состоит на нём?", ephemeral: true });
+    }
+    return;
+  }
+
   if (sub === "set-role") {
-    const serverInput = interaction.options.getString("server", true).trim();
+    const guildId = resolveGuildId(interaction.client, interaction.options.getString("server", true));
+    if (!guildId) {
+      await interaction.reply({
+        content: "Не нашёл такой сервер среди серверов бота. Выберите сервер из подсказок поля server.",
+        ephemeral: true,
+      });
+      return;
+    }
     const roleInput = interaction.options.getString("role", true).trim();
 
-    // `server` normally arrives as a guild id from autocomplete, but if the
-    // creator typed a name by hand, match on the server's name as a fallback.
-    const destination = DESTINATIONS.find(
-      (d) =>
-        d.guildId === serverInput ||
-        interaction.client.guilds.cache.get(d.guildId)?.name.toLowerCase() === serverInput.toLowerCase()
-    );
-    if (!destination) {
+    // «none» — убрать роль: сообщения продолжат приходить, но без пинга.
+    if (/^(none|нет|-)$/i.test(roleInput)) {
+      const ok = setDestinationRole(guildId, null);
       await interaction.reply({
-        content: "Такого сервера нет в списке. Выберите сервер из подсказок поля server.",
+        content: ok
+          ? "Роль убрана — при превышении лимитов бот никого не пингует."
+          : "Для этого сервера ещё не задан канал. Сначала /capt set-channel.",
         ephemeral: true,
       });
       return;
     }
 
-    const roleId = (roleInput.match(/^<@&(\d{17,20})>$/)?.[1] ?? roleInput).trim();
-    if (!ID_PATTERN.test(roleId)) {
+    const roleId = parseId(roleInput, "role");
+    if (!roleId) {
       await interaction.reply({ content: "Это не похоже на ID роли или упоминание роли.", ephemeral: true });
       return;
     }
 
-    // Make sure the role really exists on that server — a wrong id is exactly
-    // what produced "@неизвестная роль" in the first place.
+    // Проверяем, что роль реально есть на сервере — неверный id как раз и давал «@неизвестная роль».
     try {
-      const guild = await interaction.client.guilds.fetch(destination.guildId);
+      const guild = await interaction.client.guilds.fetch(guildId);
       const role = await guild.roles.fetch(roleId);
       if (!role) {
         await interaction.reply({ content: `Роль с ID ${roleId} не найдена на сервере «${guild.name}».`, ephemeral: true });
         return;
       }
-      setPingRoleOverride(destination.guildId, role.id);
+      if (!setDestinationRole(guildId, role.id)) {
+        await interaction.reply({
+          content: `Для сервера «${guild.name}» ещё не задан канал. Сначала /capt set-channel.`,
+          ephemeral: true,
+        });
+        return;
+      }
       await interaction.reply({
         content: `Для сервера «${guild.name}» роль для пинга при превышении лимитов теперь: <@&${role.id}> (${role.name}).`,
         ephemeral: true,
@@ -158,11 +304,35 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       });
     } catch (err) {
       console.error("[captTracker] set-role: не удалось проверить роль:", err);
-      await interaction.reply({
-        content: "Не удалось проверить роль на этом сервере. Бот точно состоит на нём?",
-        ephemeral: true,
-      });
+      await interaction.reply({ content: "Не удалось проверить роль на этом сервере. Бот точно состоит на нём?", ephemeral: true });
     }
+    return;
+  }
+
+  if (sub === "remove-channel") {
+    const guildId = resolveGuildId(interaction.client, interaction.options.getString("server", true));
+    const removed = guildId ? removeDestination(guildId) : false;
+    await interaction.reply({
+      content: removed
+        ? "Готово: на этот сервер бот больше не шлёт сообщения о каптах."
+        : "Этот сервер не был в списке получателей.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (sub === "set-source") {
+    const channel = interaction.options.getChannel("channel", true);
+    if (!("guildId" in channel) || channel.guildId !== MAIN_GUILD_ID) {
+      await interaction.reply({ content: "Канал-источник должен быть на главном сервере.", ephemeral: true });
+      return;
+    }
+    setSourceChannelId(channel.id);
+    await interaction.reply({
+      content: `Забивы теперь читаются из <#${channel.id}>.`,
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
     return;
   }
 
@@ -199,23 +369,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  if (sub === "status") {
-    const dayKey = dayKeyFromDate(new Date());
-    const counts = getDayCounts(dayKey);
-    const entries = Object.entries(counts);
-    if (!entries.length) {
-      await interaction.reply({ content: `Сегодня (${dayKey}) каптов ещё не было.`, ephemeral: true });
-      return;
-    }
-    const lines = entries.map(
-      ([faction, c]) =>
-        `• ${faction}: ⚔️ ${c.attacks} / 🛡️ ${c.defenses}` +
-        (c.attacks > DAILY_ATTACK_DEFENSE_LIMIT || c.defenses > DAILY_ATTACK_DEFENSE_LIMIT ? " ⚠️" : "")
-    );
-    await interaction.reply({ content: `Сводка за ${dayKey}:\n${lines.join("\n")}`, ephemeral: true });
-    return;
-  }
-
   if (sub === "reset-day") {
     const dayKey = dayKeyFromDate(new Date());
     resetDay(dayKey);
@@ -248,7 +401,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 
     const updated = setFactionCounts(dayKey, faction, attacks ?? undefined, defenses ?? undefined);
     await interaction.reply({
-      content: `Счётчик «${faction}» за ${dayKey} обновлён вручную: ⚔️ ${updated.attacks} / 🛡️ ${updated.defenses}`,
+      content: `Счётчик «${faction}» за ${dayKey} обновлён вручную: ⚔️ ${updated.attacks} / 🛡️ ${updated.defenses}` +
+        (updated.attacks > DAILY_ATTACK_DEFENSE_LIMIT || updated.defenses > DAILY_ATTACK_DEFENSE_LIMIT ? " ⚠️" : ""),
       ephemeral: true,
     });
     return;
