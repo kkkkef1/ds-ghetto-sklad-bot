@@ -30,6 +30,7 @@ export interface CaptRecord {
   dayKey: string;
   /** The report's own "Номер забива" field, when present — used to detect a duplicate repost of the same capture (see recordCapt). */
   captNumber: string | null;
+  square?: string | null;
   attacker: string;
   defender: string;
   canceled: boolean;
@@ -151,7 +152,8 @@ export function recordCapt(
   dayKey: string,
   attacker: string,
   defender: string,
-  captNumber: string | null
+  captNumber: string | null,
+  square: string | null = null
 ): CaptRecord {
   ensureFaction(dayKey, attacker).attacks += 1;
   ensureFaction(dayKey, defender).defenses += 1;
@@ -159,6 +161,7 @@ export function recordCapt(
     id,
     dayKey,
     captNumber,
+    square,
     attacker,
     defender,
     canceled: false,

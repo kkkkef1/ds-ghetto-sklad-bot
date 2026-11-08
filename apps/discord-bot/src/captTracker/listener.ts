@@ -36,8 +36,8 @@ export function registerCaptListener(client: Client): void {
     }
 
     try {
-      const record = recordCapt(message.id, dayKey, parsed.attacker, parsed.defender, parsed.captNumber);
-      await publishCapt(client, record.id, parsed.attacker, parsed.defender, dayKey);
+      const record = recordCapt(message.id, dayKey, parsed.attacker, parsed.defender, parsed.captNumber, parsed.fields["Квадрат"] ?? null);
+      await publishCapt(client, record.id, parsed.attacker, parsed.defender, dayKey, record.captNumber, record.square ?? null);
     } catch (err) {
       console.error("[captTracker] Не удалось обработать новый забив:", err);
     }

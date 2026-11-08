@@ -42,6 +42,8 @@ export interface BuildCaptContentOptions {
   dayCounts: DayCounts;
   /** Роль для пинга при превышении лимита на этом сервере; null — без пинга. */
   pingRoleId: string | null;
+  captNumber?: string | null;
+  square?: string | null;
   /** True once this capt has been rolled back via the button. */
   canceled?: boolean;
 }
@@ -52,15 +54,17 @@ export interface BuildCaptContentOptions {
  * (and stays, with the corrected numbers, if someone still is).
  */
 export function buildCaptContent(opts: BuildCaptContentOptions): string {
-  const { attacker, defender, dayCounts, pingRoleId, canceled } = opts;
+  const { attacker, defender, dayCounts, pingRoleId, canceled, captNumber, square } = opts;
 
   const lines: string[] = [];
   lines.push(DIVIDER);
   lines.push(
     canceled
       ? `❌ **Капт отменён:**  ${attacker}  ${ATTACK_EMOJI}  vs  ${DEFENSE_EMOJI}  ${defender}`
-      : `🆕 **Новый капт:**  ${attacker}  ${ATTACK_EMOJI}  vs  ${DEFENSE_EMOJI}  ${defender}`
+      : `${attacker}  ${ATTACK_EMOJI}  vs  ${DEFENSE_EMOJI}  ${defender}`
   );
+  if (captNumber) lines.push(`**Номер забива:** ${captNumber}`);
+  if (square) lines.push(`**Квадрат:** ${square}`);
   lines.push(DIVIDER);
   lines.push("");
   lines.push("**Сводка за день:**");

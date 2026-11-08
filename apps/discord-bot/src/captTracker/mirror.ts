@@ -10,7 +10,9 @@ export async function publishCapt(
   recordId: string,
   attacker: string,
   defender: string,
-  dayKey: string
+  dayKey: string,
+  captNumber: string | null = null,
+  square: string | null = null
 ): Promise<void> {
   const dayCounts = getDayCounts(dayKey);
 
@@ -22,7 +24,7 @@ export async function publishCapt(
         continue;
       }
 
-      const content = buildCaptContent({ attacker, defender, dayCounts, pingRoleId: destination.pingRoleId });
+      const content = buildCaptContent({ attacker, defender, dayCounts, pingRoleId: destination.pingRoleId, captNumber, square });
       const message = await (channel as TextChannel).send({
         content,
         components: [buildCancelRow(recordId)],
@@ -163,6 +165,8 @@ export async function refreshCaptMessages(
         dayCounts,
         pingRoleId,
         canceled: record.canceled,
+        captNumber: record.captNumber,
+        square: record.square ?? null,
       });
       const ok = await editWithRetry(client, target.channelId, target.messageId, {
         content,
