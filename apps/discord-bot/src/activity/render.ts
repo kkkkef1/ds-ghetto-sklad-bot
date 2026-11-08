@@ -9,12 +9,20 @@ export const MARK_PREFIX = "act_m:";
 /** customId кнопок старшего «Был / Не был»: act_c:<id проведения>:<id админа>:p|a */
 export const CONFIRM_PREFIX = "act_c:";
 
-/** Сколько админов помещается в одно сообщение подбивки (по 2 кнопки на админа, 25 кнопок максимум). */
+/** Сколько админов помещается в одно сообщение проверки присутствия (по 2 кнопки на админа, 25 кнопок максимум). */
 export const ADMINS_PER_PAGE = 10;
 
 export interface Page {
   content: string;
   components: ActionRowBuilder<ButtonBuilder>[];
+}
+
+/** Разделитель — тот же, что в сообщениях о каптах. */
+const DIVIDER = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+
+/** Оборачивает строки в разделители сверху и снизу. */
+function frame(...lines: string[]): string {
+  return [DIVIDER, ...lines, DIVIDER].join("\n");
 }
 
 function timePart(ms: number): string {
@@ -38,31 +46,33 @@ function sortedAdminIds(occ: Occurrence): string[] {
 
 export function renderAnnounce(occ: Occurrence): Page {
   if (occ.canceled) {
-    return { content: `❌ **Отменено:** ${occTitle(occ)}, ${formatDateTime(occ.startAt)} (МСК)`, components: [] };
+    return {
+      content: frame(`**Отменено:** ${occTitle(occ)}`, `Дата: ${formatDateTime(occ.startAt)} (МСК)`),
+      components: [],
+    };
   }
+  if (occ.kind === "meeting") return renderMeetingAnnounce(occ);
 
   const ping = occ.pingRoleId ? `<@&${occ.pingRoleId}>\n` : "";
-  let body: string;
-  if (occ.kind === "event") {
-    body =
-      `**${occTitle(occ)}**\n` +
-      `Начало в ${timePart(occ.startAt)} (МСК). За ${occ.prepMinutes} минут нужно быть в игре.`;
-  } else {
-    // Для собрания название — это и есть пинг роли фракции.
-    return renderMeetingAnnounce(occ);
-  }
-
-  const content = `${ping}${body}\n\n**Кто будет?**${occ.closed ? "\n🔒 Отметка закрыта." : ""}`;
-  return { content, components: [markRow(occ)] };
+  const lines = [
+    `**${occTitle(occ)}**`,
+    `Начало: **${timePart(occ.startAt)}** (МСК)`,
+    `В игре нужно быть за **${occ.prepMinutes}** мин.`,
+    "",
+    occ.closed ? "🔒 **Отметка закрыта**" : "**Кто будет?**",
+  ];
+  return { content: ping + frame(...lines), components: [markRow(occ)] };
 }
 
 function renderMeetingAnnounce(occ: Occurrence): Page {
   const role = occ.pingRoleId ? `<@&${occ.pingRoleId}>` : occ.title;
-  const content =
-    `**Собрание** ${role}\n` +
-    `📅 ${formatDateTime(occ.startAt)} (МСК)\n\n` +
-    `**Кто будет?**${occ.closed ? "\n🔒 Отметка закрыта." : ""}`;
-  return { content, components: [markRow(occ)] };
+  const lines = [
+    `**Собрание** ${role}`,
+    `Дата: **${formatDateTime(occ.startAt)}** (МСК)`,
+    "",
+    occ.closed ? "🔒 **Отметка закрыта**" : "**Кто будет?**",
+  ];
+  return { content: frame(...lines), components: [markRow(occ)] };
 }
 
 function markRow(occ: Occurrence): ActionRowBuilder<ButtonBuilder> {
@@ -86,13 +96,17 @@ function markRow(occ: Occurrence): ActionRowBuilder<ButtonBuilder> {
 
 export function renderReminder(occ: Occurrence): string {
   if (occ.kind === "event") {
-    return (
-      `⏰ **Напоминание:** через 30 минут начнётся ${occTitle(occ)} — в ${timePart(occ.startAt)} (МСК). ` +
-      `За ${occ.prepMinutes} минут нужно быть в игре.`
+    return frame(
+      `**Напоминание:** через 30 минут начнётся ${occTitle(occ)}`,
+      `Начало: **${timePart(occ.startAt)}** (МСК)`,
+      `В игре нужно быть за **${occ.prepMinutes}** мин.`
     );
   }
   const role = occ.pingRoleId ? `<@&${occ.pingRoleId}>` : occ.title;
-  return `⏰ **Напоминание:** через 30 минут начнётся собрание ${role} — в ${timePart(occ.startAt)} (МСК).`;
+  return frame(
+    `**Напоминание:** через 30 минут начнётся собрание ${role}`,
+    `Начало: **${timePart(occ.startAt)}** (МСК)`
+  );
 }
 
 // ---- отметка админа в N2 ----
@@ -100,23 +114,26 @@ export function renderReminder(occ: Occurrence): string {
 export function renderMark(occ: Occurrence, userId: string): string {
   const mark = occ.marks[userId];
   const status = mark?.status === "yes" ? "✅ будет" : "❌ не будет";
-  return `🗓 ${occTitle(occ)}, ${formatDateTime(occ.startAt)}: **${adminName(occ, userId)}** — ${status}`;
+  return frame(
+    `**${occTitle(occ)}** · ${formatDateTime(occ.startAt)} (МСК)`,
+    `**${adminName(occ, userId)}** — ${status}`
+  );
 }
 
-// ---- подбивка для старшего в N2 (с кнопками «Был / Не был») ----
+// ---- проверка присутствия для старшего в N2 (с кнопками «Был / Не был») ----
 
-function reportHeader(occ: Occurrence): string {
-  return `📋 **Подбивка: ${occTitle(occ)}**\n📅 ${formatDateTime(occ.startAt)} (МСК)\nОтметьте, кто был:`;
+function reportHeader(occ: Occurrence): string[] {
+  return [`**Присутствие: ${occTitle(occ)}**`, `Начало: ${formatDateTime(occ.startAt)} (МСК)`, "Отметьте, кто был:"];
 }
 
 function markText(occ: Occurrence, userId: string): string {
   const m = occ.marks[userId];
-  return m ? (m.status === "yes" ? "✅ буду" : "❌ не буду") : "— нет отметки";
+  return m ? (m.status === "yes" ? "✅ буду" : "❌ не буду") : "нет отметки";
 }
 
 function confirmText(occ: Occurrence, userId: string): string {
   const c = occ.confirm[userId];
-  return c === "present" ? "🟢 был" : c === "absent" ? "🔴 не был" : "⏳ ждёт";
+  return c === "present" ? "🟢 был" : c === "absent" ? "🔴 не был" : "ожидает";
 }
 
 export function renderReportPages(occ: Occurrence, seniorRoleId: string | null): Page[] {
@@ -126,7 +143,7 @@ export function renderReportPages(occ: Occurrence, seniorRoleId: string | null):
   if (!ids.length) {
     return [
       {
-        content: `${ping}${reportHeader(occ)}\n\nСписок админов пуст — проверьте роли админов в настройках сервера.`,
+        content: ping + frame(...reportHeader(occ), "", "Список админов пуст — проверьте роли админов в настройках сервера."),
         components: [],
       },
     ];
@@ -138,7 +155,10 @@ export function renderReportPages(occ: Occurrence, seniorRoleId: string | null):
     const lines = chunk.map(
       (id) => `• **${adminName(occ, id)}** — отметка: ${markText(occ, id)} | итог: ${confirmText(occ, id)}`
     );
-    const head = start === 0 ? `${ping}${reportHeader(occ)}\n\n` : `📋 **${occTitle(occ)}** (продолжение)\n\n`;
+    const head =
+      start === 0
+        ? [...reportHeader(occ), ""]
+        : [`**Присутствие: ${occTitle(occ)}** (продолжение)`, ""];
 
     const rows: ActionRowBuilder<ButtonBuilder>[] = [];
     for (let i = 0; i < chunk.length; i += 2) {
@@ -159,40 +179,48 @@ export function renderReportPages(occ: Occurrence, seniorRoleId: string | null):
       }
       rows.push(row);
     }
-    pages.push({ content: head + lines.join("\n"), components: rows });
+    pages.push({ content: (start === 0 ? ping : "") + frame(...head, ...lines), components: rows });
   }
   return pages;
 }
 
-// ---- итоговая подбивка в N1 ----
+// ---- итоги в N1 ----
 
 const PAGE_LIMIT = 1800;
 
 export function renderSummaryPages(occ: Occurrence): string[] {
-  const header = `📋 **Подбивка: ${occTitle(occ)}**\n📅 ${formatDateTime(occ.startAt)} (МСК)`;
+  const header = [`**Итоги: ${occTitle(occ)}**`, `Начало: ${formatDateTime(occ.startAt)} (МСК)`];
   const ids = sortedAdminIds(occ);
 
-  if (!ids.length) return [`${header}\n\nАдминов для подбивки нет.`];
+  if (!ids.length) return [frame(...header, "", "Админов для проверки нет.")];
 
   const present = ids.filter((id) => occ.confirm[id] === "present");
   const absent = ids.filter((id) => occ.confirm[id] === "absent");
   const pending = ids.filter((id) => !occ.confirm[id]);
 
   const lines: string[] = [
-    ...present.map((id) => `${adminName(occ, id)} — присутствовал`),
-    ...absent.map((id) => `${adminName(occ, id)} — отсутствовал`),
-    ...pending.map((id) => `${adminName(occ, id)} — ⏳ не подтверждено старшим`),
+    ...present.map((id) => `🟢 ${adminName(occ, id)} — присутствовал`),
+    ...absent.map((id) => `🔴 ${adminName(occ, id)} — отсутствовал`),
+    ...pending.map((id) => `${adminName(occ, id)} — не подтверждено старшим`),
   ];
 
-  const pages: string[] = [];
-  let current = header + "\n";
+  // Разделители занимают место в лимите сообщения.
+  const budget = PAGE_LIMIT - DIVIDER.length * 2 - 10;
+  const chunks: string[][] = [];
+  let current: string[] = [];
+  let size = 0;
   for (const line of lines) {
-    if (current.length + line.length + 1 > PAGE_LIMIT) {
-      pages.push(current.trimEnd());
-      current = `📋 **${occTitle(occ)}** (продолжение)\n`;
+    if (size + line.length + 1 > budget && current.length) {
+      chunks.push(current);
+      current = [];
+      size = 0;
     }
-    current += `\n${line}`;
+    current.push(line);
+    size += line.length + 1;
   }
-  pages.push(current.trimEnd());
-  return pages;
+  chunks.push(current);
+
+  return chunks.map((chunk, i) =>
+    frame(...(i === 0 ? header : [`**Итоги: ${occTitle(occ)}** (продолжение)`]), "", ...chunk)
+  );
 }

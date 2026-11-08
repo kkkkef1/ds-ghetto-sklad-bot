@@ -1,7 +1,6 @@
 import { SlashCommandBuilder, type AutocompleteInteraction, type ChatInputCommandInteraction } from "discord.js";
-import { CREATOR_ID } from "../captTracker/config.js";
-import { getHelpers } from "../captTracker/store.js";
-import { cancelOccurrence, createMeeting, getMember, isAdminMember } from "../activity/service.js";
+import { canManageServer } from "../access.js";
+import { cancelOccurrence, createMeeting } from "../activity/service.js";
 import { getGuildSettings, getOccurrence, listOccurrences } from "../activity/store.js";
 import { formatDateTime, mskToUtcMs, parseDateInput, parseTime } from "../activity/time.js";
 
@@ -26,12 +25,6 @@ export const data = new SlashCommandBuilder()
       )
   )
   .addSubcommand((sc) => sc.setName("list").setDescription("Предстоящие собрания на этом сервере"));
-
-async function canManage(interaction: ChatInputCommandInteraction): Promise<boolean> {
-  if (interaction.user.id === CREATOR_ID || getHelpers().includes(interaction.user.id)) return true;
-  const member = await getMember(interaction);
-  return member !== null && isAdminMember(getGuildSettings(interaction.guildId!), member);
-}
 
 function upcomingMeetings(guildId: string) {
   const now = Date.now();
@@ -59,13 +52,17 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     await interaction.reply({ content: "Команда работает только на сервере.", ephemeral: true });
     return;
   }
-  if (!(await canManage(interaction))) {
-    await interaction.reply({ content: "Собрания могут регистрировать только админы сервера.", ephemeral: true });
-    return;
-  }
-
   const sub = interaction.options.getSubcommand();
   const noPing = { parse: [] as never[] };
+
+  // Список собраний открыт всем; регистрировать и отменять — админы сервера, модераторы и создатель.
+  if (sub !== "list" && !(await canManageServer(interaction))) {
+    await interaction.reply({
+      content: "Собрания могут регистрировать только админы сервера, модераторы и создатель.",
+      ephemeral: true,
+    });
+    return;
+  }
 
   if (sub === "list") {
     const list = upcomingMeetings(guildId);
@@ -118,7 +115,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   const settings = getGuildSettings(guildId);
   if (!settings.announceChannelId) {
     await interaction.reply({
-      content: "Для этого сервера не задан канал «Активити МП» (N1). Его настраивают через /mp set-channel на главном сервере.",
+      content: "Для этого сервера не задан канал «Активити МП» (N1). Его настраивают через /mp set-channel.",
       ephemeral: true,
     });
     return;

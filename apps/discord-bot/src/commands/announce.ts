@@ -4,7 +4,7 @@ import {
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from "discord.js";
-import { CREATOR_ID } from "../captTracker/config.js";
+import { isCreatorOrModerator } from "../captTracker/store.js";
 
 // Channel ids are unique across all of Discord, so a plain string option is
 // enough to address a channel on *any* server the bot is in — a native
@@ -12,7 +12,7 @@ import { CREATOR_ID } from "../captTracker/config.js";
 // command is being run in, which would defeat the point of this command.
 export const data = new SlashCommandBuilder()
   .setName("announce")
-  .setDescription("Опубликовать сообщение от бота в канал на любом сервере (только создатель)")
+  .setDescription("Опубликовать сообщение от бота в канал на любом сервере (создатель и модераторы)")
   .setDMPermission(true)
   .addStringOption((o) =>
     o.setName("channel_id").setDescription("ID канала назначения (ПКМ по каналу → Копировать ID)").setRequired(true)
@@ -27,11 +27,8 @@ export const data = new SlashCommandBuilder()
 const ID_PATTERN = /^\d{17,20}$/;
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
-  // Deliberately creator-only, not creator-or-helper: this posts as the bot
-  // to any server it's in, with no further scoping — broader than any other
-  // admin command in the bot, so it gets the narrowest permission check.
-  if (interaction.user.id !== CREATOR_ID) {
-    await interaction.reply({ content: "Эта команда доступна только создателю бота.", ephemeral: true });
+  if (!isCreatorOrModerator(interaction.user.id)) {
+    await interaction.reply({ content: "Эта команда доступна только создателю и модераторам.", ephemeral: true });
     return;
   }
 

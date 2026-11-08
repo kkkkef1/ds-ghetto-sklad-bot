@@ -36,7 +36,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent, // required to read plain-text log dumps, not just slash commands
-    GatewayIntentBits.GuildMembers, // привилегированный: список админов по ролям для подбивки МП (включить в Developer Portal)
+    GatewayIntentBits.GuildMembers, // привилегированный: список админов по ролям для проверки присутствия МП (включить в Developer Portal)
   ],
   partials: [Partials.Channel, Partials.Message],
 });
@@ -101,7 +101,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     } catch (err) {
       console.error("[discord-bot] Не удалось обработать кнопку активити:", err);
       const payload = { content: "Произошла ошибка. Попробуйте ещё раз.", ephemeral: true } as const;
-      // deferReply (отметка) -> editReply; deferUpdate (подбивка) -> followUp, чтобы не затереть само сообщение.
+      // deferReply (отметка) -> editReply; deferUpdate (проверка присутствия) -> followUp, чтобы не затереть само сообщение.
       if (interaction.customId.startsWith(MARK_PREFIX) && (interaction.deferred || interaction.replied)) {
         await interaction.editReply({ content: payload.content }).catch(() => {});
       } else if (interaction.deferred || interaction.replied) {
@@ -133,7 +133,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 // Registers the seizure-report listener and periodic housekeeping.
 initCaptTracker(client);
-// Планировщик МП и собраний: анонсы, напоминания, подбивки.
+// Планировщик МП и собраний: анонсы, напоминания, итоги.
 initActivity(client);
 
 const token = process.env.DISCORD_TOKEN;

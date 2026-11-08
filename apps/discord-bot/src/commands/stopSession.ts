@@ -5,6 +5,8 @@ import {
 } from "discord.js";
 import { forceCloseSession, getActiveSessionChannel, getSession } from "../session.js";
 
+import { isCreatorOrModerator } from "../captTracker/store.js";
+
 export const data = new SlashCommandBuilder()
   .setName("stopsliv")
   .setDescription("Принудительно закрыть сессию слива склада")
@@ -20,10 +22,12 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   const isSelf = !targetUser || targetUser.id === interaction.user.id;
 
   if (!isSelf) {
-    const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ?? false;
+    const isAdmin =
+      (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ?? false) ||
+      isCreatorOrModerator(interaction.user.id);
     if (!isAdmin) {
       await interaction.reply({
-        content: "Закрывать чужие сессии может только администратор сервера.",
+        content: "Закрывать чужие сессии может только администратор сервера или модератор.",
         ephemeral: true,
       });
       return;

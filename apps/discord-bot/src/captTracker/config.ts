@@ -5,12 +5,12 @@
 // какая роль пингуется, какой канал слушаем — меняется командами /capt ...
 // и хранится в capt-store.json (см. store.ts).
 
-/** The one Discord user who can manage the bot (settings, helpers, counters). */
+/** The one Discord user who can manage the bot (settings, moderators, counters). */
 export const CREATOR_ID = "437954847015436288";
 
 /**
  * Главный сервер по настройке: команды управления (/capt set-channel,
- * set-role, set-source, helper-*, reset-day, edit-count ...) работают только
+ * server, source, counter, moderator ...) работают только
  * здесь. Бот при этом слушает забивы именно на этом сервере.
  */
 export const MAIN_GUILD_ID = "1370865432776413315";

@@ -5,8 +5,7 @@ import {
   type ChatInputCommandInteraction,
   type Guild,
 } from "discord.js";
-import { CREATOR_ID, MAIN_GUILD_ID } from "../captTracker/config.js";
-import { getHelpers } from "../captTracker/store.js";
+import { isCreatorOrModerator } from "../access.js";
 import { cancelOccurrence, startTimesFor } from "../activity/service.js";
 import {
   addEvent,
@@ -18,6 +17,7 @@ import {
   removeEvent,
   updateGuildSettings,
   type ActivityEvent,
+  type GuildSettings,
 } from "../activity/store.js";
 import {
   formatDateKey,
@@ -30,64 +30,33 @@ import {
 } from "../activity/time.js";
 import { parseIds, resolveGuildId, respondWithGuilds } from "../activity/util.js";
 
-const SERVER_DESC = "Сервер, где есть бот (выберите из подсказок)";
+const SERVER_DESC = "Сервер, где есть бот (по умолчанию — текущий)";
 const EVENT_DESC = "МП (выберите из подсказок)";
 
 export const data = new SlashCommandBuilder()
   .setName("mp")
-  .setDescription("Настройка МП (еженедельных мероприятий) и подбивок")
+  .setDescription("МП: расписание мероприятий и настройки активити")
   .setDMPermission(false)
   .addSubcommand((sc) =>
     sc
       .setName("settings")
-      .setDescription("Показать настройки сервера и список МП")
-      .addStringOption((o) => o.setName("server").setDescription(SERVER_DESC).setRequired(true).setAutocomplete(true))
+      .setDescription("Настройки сервера и список МП")
+      .addStringOption((o) => o.setName("server").setDescription(SERVER_DESC).setAutocomplete(true))
   )
   .addSubcommand((sc) =>
     sc
-      .setName("set-channel")
-      .setDescription("Задать канал N1 («Активити МП») или N2 (отметки админов и подбивка старшему)")
-      .addStringOption((o) => o.setName("server").setDescription(SERVER_DESC).setRequired(true).setAutocomplete(true))
-      .addStringOption((o) =>
-        o
-          .setName("type")
-          .setDescription("Какой канал задаём")
-          .setRequired(true)
-          .addChoices(
-            { name: "N1 — Активити МП (анонсы, напоминания, итоги)", value: "announce" },
-            { name: "N2 — отметки админов и подбивка старшему", value: "report" }
-          )
-      )
-      .addStringOption((o) =>
-        o.setName("channel").setDescription("ID канала или #упоминание").setRequired(true)
-      )
-  )
-  .addSubcommand((sc) =>
-    sc
-      .setName("set-admin-roles")
-      .setDescription("Роли админов (можно несколько): они отмечаются и могут регистрировать собрания")
-      .addStringOption((o) => o.setName("server").setDescription(SERVER_DESC).setRequired(true).setAutocomplete(true))
-      .addStringOption((o) =>
-        o
-          .setName("roles")
-          .setDescription("ID ролей или @упоминания через пробел; none — очистить список")
-          .setRequired(true)
-      )
-  )
-  .addSubcommand((sc) =>
-    sc
-      .setName("set-senior-role")
-      .setDescription("Роль старшего админа: подтверждает «был / не был»")
-      .addStringOption((o) => o.setName("server").setDescription(SERVER_DESC).setRequired(true).setAutocomplete(true))
-      .addStringOption((o) =>
-        o.setName("role").setDescription("ID роли или @упоминание; none — убрать").setRequired(true)
-      )
+      .setName("setup")
+      .setDescription("Каналы и роли сервера; укажите то, что меняете")
+      .addStringOption((o) => o.setName("server").setDescription(SERVER_DESC).setAutocomplete(true))
+      .addStringOption((o) => o.setName("announce").setDescription("Канал N1 «Активити МП» (анонсы, напоминания, итоги): ID или #упоминание"))
+      .addStringOption((o) => o.setName("report").setDescription("Канал N2 (отметки админов и проверка присутствия): ID или #упоминание"))
+      .addStringOption((o) => o.setName("admin-roles").setDescription("Роли админов: ID или @упоминания через пробел; none — очистить"))
+      .addStringOption((o) => o.setName("senior-role").setDescription("Роль старшего админа (подтверждает «был / не был»): ID, @роль или none"))
   )
   .addSubcommand((sc) =>
     sc
       .setName("add")
       .setDescription("Добавить МП (повторяется каждую неделю)")
-      .addStringOption((o) => o.setName("server").setDescription(SERVER_DESC).setRequired(true).setAutocomplete(true))
       .addStringOption((o) => o.setName("name").setDescription("Название, например BLACKOUT").setRequired(true))
       .addStringOption((o) =>
         o.setName("days").setDescription("Дни недели: вт или пн ср пт; «все» — каждый день").setRequired(true)
@@ -100,11 +69,12 @@ export const data = new SlashCommandBuilder()
         o.setName("post").setDescription("Во сколько писать анонс по МСК (по умолчанию 09:00)")
       )
       .addStringOption((o) => o.setName("role").setDescription("Роль для пинга: ID или @упоминание"))
+      .addStringOption((o) => o.setName("server").setDescription(SERVER_DESC).setAutocomplete(true))
   )
   .addSubcommand((sc) =>
     sc
       .setName("edit")
-      .setDescription("Изменить МП (укажите только то, что меняется)")
+      .setDescription("Изменить МП или включить/отключить его (укажите только то, что меняется)")
       .addStringOption((o) => o.setName("event").setDescription(EVENT_DESC).setRequired(true).setAutocomplete(true))
       .addStringOption((o) => o.setName("name").setDescription("Новое название"))
       .addStringOption((o) => o.setName("days").setDescription("Новые дни недели"))
@@ -114,13 +84,7 @@ export const data = new SlashCommandBuilder()
       )
       .addStringOption((o) => o.setName("post").setDescription("Во сколько писать анонс по МСК"))
       .addStringOption((o) => o.setName("role").setDescription("Роль для пинга: ID, @упоминание или none"))
-  )
-  .addSubcommand((sc) =>
-    sc
-      .setName("toggle")
-      .setDescription("Включить или отключить МП, не удаляя его")
-      .addStringOption((o) => o.setName("event").setDescription(EVENT_DESC).setRequired(true).setAutocomplete(true))
-      .addBooleanOption((o) => o.setName("enabled").setDescription("true — включить, false — отключить").setRequired(true))
+      .addBooleanOption((o) => o.setName("enabled").setDescription("true — включить МП, false — отключить, не удаляя"))
   )
   .addSubcommand((sc) =>
     sc
@@ -144,10 +108,6 @@ export const data = new SlashCommandBuilder()
       .setDescription("Удалить МП насовсем")
       .addStringOption((o) => o.setName("event").setDescription(EVENT_DESC).setRequired(true).setAutocomplete(true))
   );
-
-function allowed(userId: string): boolean {
-  return userId === CREATOR_ID || getHelpers().includes(userId);
-}
 
 function parseRoleId(input: string): string | null {
   return parseIds(input)[0] ?? null;
@@ -201,6 +161,10 @@ async function fetchGuild(interaction: ChatInputCommandInteraction, serverInput:
 
 export async function autocomplete(interaction: AutocompleteInteraction): Promise<void> {
   const focused = interaction.options.getFocused(true);
+  if (!isCreatorOrModerator(interaction.user.id)) {
+    await interaction.respond([]);
+    return;
+  }
   if (focused.name === "server") {
     await respondWithGuilds(interaction, focused.value);
     return;
@@ -221,23 +185,24 @@ export async function autocomplete(interaction: AutocompleteInteraction): Promis
 }
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (interaction.guildId !== MAIN_GUILD_ID) {
-    await interaction.reply({ content: "Настройки МП доступны только на главном сервере.", ephemeral: true });
-    return;
-  }
-  if (!allowed(interaction.user.id)) {
-    await interaction.reply({ content: "Эта команда доступна только создателю и помощникам.", ephemeral: true });
-    return;
-  }
-
   const sub = interaction.options.getSubcommand();
   const reply = (content: string) =>
     interaction.reply({ content, ephemeral: true, allowedMentions: { parse: [] } });
 
+  // Всё, что связано с МП, — только создатель и модераторы.
+  if (!isCreatorOrModerator(interaction.user.id)) {
+    await reply("Команды МП доступны только создателю и модераторам.");
+    return;
+  }
+
+  /** Сервер, с которым работаем: указанный или текущий. */
+  const targetGuild = (): Promise<Guild | null> =>
+    fetchGuild(interaction, interaction.options.getString("server") ?? interaction.guildId ?? "");
+
   // ---------- настройки сервера ----------
 
   if (sub === "settings") {
-    const guild = await fetchGuild(interaction, interaction.options.getString("server", true));
+    const guild = await targetGuild();
     if (!guild) return;
     const s = getGuildSettings(guild.id);
     const ch = (id: string | null) => (id ? `<#${id}>` : "**не задан**");
@@ -246,7 +211,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     const lines = [
       `**Сервер «${guild.name}»**`,
       `N1 «Активити МП»: ${ch(s.announceChannelId)}`,
-      `N2 (отметки и подбивка): ${ch(s.reportChannelId)}`,
+      `N2 (отметки и присутствие): ${ch(s.reportChannelId)}`,
       `Роли админов: ${roles}`,
       `Старший админ: ${s.seniorRoleId ? `<@&${s.seniorRoleId}>` : "**не задан**"}`,
       "",
@@ -257,90 +222,101 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  if (sub === "set-channel") {
-    const guild = await fetchGuild(interaction, interaction.options.getString("server", true));
+  if (sub === "setup") {
+    const guild = await targetGuild();
     if (!guild) return;
-    const channelId = parseIds(interaction.options.getString("channel", true))[0];
-    if (!channelId) {
-      await reply("Это не похоже на ID канала.");
+    const announceInput = interaction.options.getString("announce");
+    const reportInput = interaction.options.getString("report");
+    const rolesInput = interaction.options.getString("admin-roles")?.trim() ?? null;
+    const seniorInput = interaction.options.getString("senior-role")?.trim() ?? null;
+    if (announceInput === null && reportInput === null && rolesInput === null && seniorInput === null) {
+      await reply("Укажите хотя бы одно поле: announce, report, admin-roles или senior-role.");
       return;
     }
-    const channel = await guild.channels.fetch(channelId).catch(() => null);
-    if (!channel || !channel.isTextBased()) {
-      await reply(`Текстовый канал с ID ${channelId} не найден на сервере «${guild.name}».`);
-      return;
-    }
-    const me = await guild.members.fetchMe();
-    const perms = channel.permissionsFor(me);
-    if (!perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])) {
-      await reply(`У бота нет прав «Просмотр канала» и «Отправка сообщений» в <#${channel.id}>.`);
-      return;
-    }
-    const type = interaction.options.getString("type", true);
-    if (type === "announce") {
-      updateGuildSettings(guild.id, { announceChannelId: channel.id });
-      await reply(`Для «${guild.name}» канал N1 «Активити МП» теперь <#${channel.id}>.`);
-    } else {
-      updateGuildSettings(guild.id, { reportChannelId: channel.id });
-      await reply(`Для «${guild.name}» канал N2 (отметки админов и подбивка) теперь <#${channel.id}>.`);
-    }
-    return;
-  }
 
-  if (sub === "set-admin-roles") {
-    const guild = await fetchGuild(interaction, interaction.options.getString("server", true));
-    if (!guild) return;
-    const input = interaction.options.getString("roles", true).trim();
-    if (/^(none|нет|-)$/i.test(input)) {
-      updateGuildSettings(guild.id, { adminRoleIds: [] });
-      await reply(`Список ролей админов для «${guild.name}» очищен.`);
-      return;
-    }
-    const ids = parseIds(input);
-    if (!ids.length) {
-      await reply("Не нашёл ни одного ID роли. Укажите ID или @упоминания через пробел.");
-      return;
-    }
-    const found: string[] = [];
-    const missing: string[] = [];
-    for (const id of ids) {
-      const role = await guild.roles.fetch(id).catch(() => null);
-      if (role) found.push(role.id);
-      else missing.push(id);
-    }
-    if (missing.length) {
-      await reply(`Не нашёл на сервере «${guild.name}» роли: ${missing.join(", ")}. Ничего не изменено.`);
-      return;
-    }
-    updateGuildSettings(guild.id, { adminRoleIds: found });
-    await reply(`Роли админов для «${guild.name}»: ${found.map((id) => `<@&${id}>`).join(", ")}.`);
-    return;
-  }
+    // Сначала проверяем всё, потом применяем.
+    const patch: Partial<Omit<GuildSettings, "guildId">> = {};
+    const done: string[] = [];
 
-  if (sub === "set-senior-role") {
-    const guild = await fetchGuild(interaction, interaction.options.getString("server", true));
-    if (!guild) return;
-    const input = interaction.options.getString("role", true).trim();
-    if (/^(none|нет|-)$/i.test(input)) {
-      updateGuildSettings(guild.id, { seniorRoleId: null });
-      await reply(`Роль старшего админа для «${guild.name}» убрана.`);
-      return;
+    const checkChannel = async (input: string, label: string): Promise<string | null> => {
+      const channelId = parseIds(input)[0];
+      if (!channelId) {
+        await reply(`${label}: это не похоже на ID канала.`);
+        return null;
+      }
+      const channel = await guild.channels.fetch(channelId).catch(() => null);
+      if (!channel || !channel.isTextBased()) {
+        await reply(`${label}: текстовый канал с ID ${channelId} не найден на сервере «${guild.name}».`);
+        return null;
+      }
+      const me = await guild.members.fetchMe();
+      if (!channel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])) {
+        await reply(`${label}: у бота нет прав «Просмотр канала» и «Отправка сообщений» в <#${channel.id}>.`);
+        return null;
+      }
+      return channel.id;
+    };
+
+    if (announceInput !== null) {
+      const id = await checkChannel(announceInput, "N1");
+      if (!id) return;
+      patch.announceChannelId = id;
+      done.push(`N1 «Активити МП» — <#${id}>`);
     }
-    const roleId = parseRoleId(input);
-    const role = roleId ? await guild.roles.fetch(roleId).catch(() => null) : null;
-    if (!role) {
-      await reply(`Роль не найдена на сервере «${guild.name}».`);
-      return;
+    if (reportInput !== null) {
+      const id = await checkChannel(reportInput, "N2");
+      if (!id) return;
+      patch.reportChannelId = id;
+      done.push(`N2 (отметки и присутствие) — <#${id}>`);
     }
-    updateGuildSettings(guild.id, { seniorRoleId: role.id });
-    await reply(`Старший админ на «${guild.name}»: <@&${role.id}>.`);
+    if (rolesInput !== null) {
+      if (/^(none|нет|-)$/i.test(rolesInput)) {
+        patch.adminRoleIds = [];
+        done.push("роли админов очищены");
+      } else {
+        const ids = parseIds(rolesInput);
+        if (!ids.length) {
+          await reply("Роли админов: не нашёл ни одного ID. Укажите ID или @упоминания через пробел.");
+          return;
+        }
+        const missing: string[] = [];
+        for (const id of ids) {
+          if (!(await guild.roles.fetch(id).catch(() => null))) missing.push(id);
+        }
+        if (missing.length) {
+          await reply(`Роли админов: не нашёл на сервере «${guild.name}» роли ${missing.join(", ")}. Ничего не изменено.`);
+          return;
+        }
+        patch.adminRoleIds = ids;
+        done.push(`роли админов: ${ids.map((id) => `<@&${id}>`).join(", ")}`);
+      }
+    }
+    if (seniorInput !== null) {
+      if (/^(none|нет|-)$/i.test(seniorInput)) {
+        patch.seniorRoleId = null;
+        done.push("старший админ убран");
+      } else {
+        const roleId = parseRoleId(seniorInput);
+        const role = roleId ? await guild.roles.fetch(roleId).catch(() => null) : null;
+        if (!role) {
+          await reply(`Старший админ: роль не найдена на сервере «${guild.name}».`);
+          return;
+        }
+        patch.seniorRoleId = role.id;
+        done.push(`старший админ: <@&${role.id}>`);
+      }
+    }
+
+    updateGuildSettings(guild.id, patch);
+    await reply(`Сервер «${guild.name}»:\n• ${done.join("\n• ")}`);
     return;
   }
 
   // ---------- МП ----------
 
   if (sub === "add") {
-    const guild = await fetchGuild(interaction, interaction.options.getString("server", true));
+    // server необязателен: без него МП добавляется на сервер, где вызвана команда.
+    const guild = await targetGuild();
     if (!guild) return;
     const days = parseDays(interaction.options.getString("days", true));
     if (!days) {
@@ -380,7 +356,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     });
     const warn = getGuildSettings(guild.id).announceChannelId
       ? ""
-      : "\n⚠️ Канал N1 для этого сервера ещё не задан — анонсы не пойдут (/mp set-channel).";
+      : "\n⚠️ Канал N1 для этого сервера ещё не задан — анонсы не пойдут (/mp setup).";
     await reply(`МП добавлено на «${guild.name}»:\n${describeEvent(event)}${warn}`);
     return;
   }
@@ -401,7 +377,11 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     const prep = interaction.options.getInteger("prep");
     const postInput = interaction.options.getString("post");
     const roleInput = interaction.options.getString("role");
-    if (name === null && daysInput === null && timeInput === null && prep === null && postInput === null && roleInput === null) {
+    const enabled = interaction.options.getBoolean("enabled");
+    if (
+      name === null && daysInput === null && timeInput === null && prep === null &&
+      postInput === null && roleInput === null && enabled === null
+    ) {
       await reply("Укажите хотя бы одно поле, которое нужно изменить.");
       return;
     }
@@ -446,6 +426,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       }
     }
 
+    if (enabled !== null) patch.enabled = enabled;
+
     Object.assign(event, patch);
     persist();
     const canceled = await cancelStale(event.id);
@@ -453,18 +435,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       `МП обновлено:\n${describeEvent(event)}\n` +
         (canceled ? `Отменено предстоящих анонсов, которые не подходят под новое расписание: ${canceled}. ` : "") +
         "Уже опубликованный анонс не переписывается, новые настройки применятся к следующим."
-    );
-    return;
-  }
-
-  if (sub === "toggle") {
-    event.enabled = interaction.options.getBoolean("enabled", true);
-    persist();
-    const canceled = await cancelStale(event.id);
-    await reply(
-      event.enabled
-        ? `МП «${event.name}» (${guildName}) включено.`
-        : `МП «${event.name}» (${guildName}) отключено.` + (canceled ? ` Отменено предстоящих анонсов: ${canceled}.` : "")
     );
     return;
   }

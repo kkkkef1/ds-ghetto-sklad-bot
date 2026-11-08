@@ -10,9 +10,9 @@ import { dirname } from "node:path";
 
 export interface GuildSettings {
   guildId: string;
-  /** N1 «Активити МП»: анонсы, напоминания и итоговые подбивки. */
+  /** N1 «Активити МП»: анонсы, напоминания и итоги. */
   announceChannelId: string | null;
-  /** N2: отметки админов и подбивка для старшего. */
+  /** N2: отметки админов и проверка присутствия для старшего. */
   reportChannelId: string | null;
   /** Роли «админов» — те, кто отмечается и может регистрировать собрания. */
   adminRoleIds: string[];
@@ -69,9 +69,9 @@ export interface Occurrence {
   canceled: boolean;
   /** userId -> отметка «буду / не буду». */
   marks: Record<string, Mark>;
-  /** userId -> серверный ник на момент последней отметки/подбивки. */
+  /** userId -> серверный ник на момент последней отметки/проверки. */
   names: Record<string, string>;
-  /** Список админов для подбивки (null — ещё не составлен). */
+  /** Список админов для проверки присутствия (null — ещё не составлен). */
   adminIds: string[] | null;
   /** userId -> решение старшего. */
   confirm: Record<string, "present" | "absent">;

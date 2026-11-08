@@ -2,7 +2,7 @@
 //
 // Small JSON-file-backed store (no DB in this app, and the volume here is
 // tiny — a handful of writes per capture). Kept as a single flat file so a
-// bot restart doesn't lose today's tally, who the helpers are, or the
+// bot restart doesn't lose today's tally, who the moderators are, or the
 // ability to still cancel an older capt.
 //
 // Not meant for concurrent multi-process access — this bot runs as one
@@ -11,7 +11,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { DEFAULT_SOURCE_CHANNEL_ID, INITIAL_DESTINATIONS, type CaptDestination } from "./config.js";
+import { CREATOR_ID, DEFAULT_SOURCE_CHANNEL_ID, INITIAL_DESTINATIONS, type CaptDestination } from "./config.js";
 
 export interface FactionDayCounts {
   attacks: number;
@@ -251,20 +251,26 @@ export function pruneOldDays(keepDays: number, referenceDate: Date = new Date())
   if (changed) persist();
 }
 
-// ---- helpers (added/removed by the creator) ----
+// ---- модераторы (добавляет/убирает создатель) ----
+// В файле данных список по-прежнему лежит под ключом `helpers`, чтобы не потерять уже сохранённых людей.
 
-export function getHelpers(): string[] {
+export function getModerators(): string[] {
   return [...data.helpers];
 }
 
-export function addHelper(userId: string): boolean {
+/** Создатель или модератор — у них доступ ко всем серьёзным функциям бота. */
+export function isCreatorOrModerator(userId: string): boolean {
+  return userId === CREATOR_ID || data.helpers.includes(userId);
+}
+
+export function addModerator(userId: string): boolean {
   if (data.helpers.includes(userId)) return false;
   data.helpers.push(userId);
   persist();
   return true;
 }
 
-export function removeHelper(userId: string): boolean {
+export function removeModerator(userId: string): boolean {
   const idx = data.helpers.indexOf(userId);
   if (idx === -1) return false;
   data.helpers.splice(idx, 1);
