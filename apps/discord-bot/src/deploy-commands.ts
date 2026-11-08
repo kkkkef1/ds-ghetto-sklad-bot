@@ -4,12 +4,16 @@ import * as startSession from "./commands/startSession.js";
 import * as stopSession from "./commands/stopSession.js";
 import * as captAdmin from "./commands/captAdmin.js";
 import * as announce from "./commands/announce.js";
+import * as mp from "./commands/mp.js";
+import * as meeting from "./commands/meeting.js";
 
 const commands = [
   startSession.data.toJSON(),
   stopSession.data.toJSON(),
   captAdmin.data.toJSON(),
   announce.data.toJSON(),
+  mp.data.toJSON(),
+  meeting.data.toJSON(),
 ];
 
 /**
