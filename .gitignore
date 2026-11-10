@@ -8,3 +8,8 @@ dist/
 !.env.example
 
 .DS_Store
+
+# warehouse: сессия браузера (куки админки!), скриншоты ошибок и результаты прототипа — не коммитить
+apps/discord-bot/data/browser-profile/
+apps/discord-bot/data/wh-debug/
+apps/discord-bot/data/wh-proto-output.json

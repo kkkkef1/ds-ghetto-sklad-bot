@@ -6,14 +6,16 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:discord.js --external:dotenv",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:discord.js --external:dotenv --external:playwright",
     "deploy-commands": "tsx src/deploy-commands.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "wh-proto": "tsx src/warehouse/prototype.ts"
   },
   "dependencies": {
     "@workspace/log-analyzer": "workspace:*",
     "discord.js": "^14.16.3",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "playwright": "^1.49.0"
   },
   "devDependencies": {
     "@types/node": "catalog:",
