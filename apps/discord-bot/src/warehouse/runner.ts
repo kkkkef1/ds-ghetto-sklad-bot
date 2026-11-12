@@ -10,7 +10,7 @@ import { loadSiteConfig } from "./config.js";
 import { fetchWindowRows } from "./fetchWindow.js";
 import type { OperatorIO } from "./io.js";
 import { CaptchaRequiredError, LogsPageError } from "./logsPage.js";
-import { describePeriod, type Period } from "./periods.js";
+import { describePeriod, splitIntoPeriods, type Period } from "./periods.js";
 import { formatFactionReport } from "./report.js";
 import { LoginError, SiteSession } from "./siteSession.js";
 import { getExcludedIds, getSettings } from "./store.js";
@@ -82,17 +82,26 @@ export async function runCheck(period: Period, io: OperatorIO): Promise<RunResul
           }
         }
         outcome.actions = actions.length;
-        outcome.suspects = analyzeActions(actions, {
-          rules: settings.rules,
-          netReturns: settings.netReturns,
-          kitCooldownCheck: settings.kitCooldownCheck,
-          kitCooldownViolations: settings.kitCooldownViolations,
-          excluded: getExcludedIds(),
-          ...DEFAULT_ANALYZE_OPTIONS,
+        // Пороги заданы на 6 часов, поэтому длинное окно (ручная проверка, /sklad force)
+        // анализируется по частям, по границам периодов. Для обычного периода часть одна.
+        const chunks = splitIntoPeriods(period.startMs, period.endMs);
+        chunks.forEach((chunk, i) => {
+          const inChunk = chunks.length === 1 ? actions : actions.filter((a) => a.time >= chunk.startMs && a.time < chunk.endMs);
+          const suspects = analyzeActions(inChunk, {
+            rules: settings.rules,
+            netReturns: settings.netReturns,
+            kitCooldownCheck: settings.kitCooldownCheck,
+            kitCooldownViolations: settings.kitCooldownViolations,
+            excluded: getExcludedIds(),
+            ...DEFAULT_ANALYZE_OPTIONS,
+          });
+          outcome.suspects.push(...suspects);
+          // Неполные данные — это нехватка самого раннего куска окна, поэтому предупреждение у первой части.
+          const incomplete = outcome.incomplete && i === 0;
+          if (suspects.length || incomplete) {
+            messages.push(...formatFactionReport(faction.name, chunk, suspects, { incomplete }));
+          }
         });
-        if (outcome.suspects.length || outcome.incomplete) {
-          messages.push(...formatFactionReport(faction.name, period, outcome.suspects, { incomplete: outcome.incomplete }));
-        }
       } catch (err) {
         if (err instanceof LoginError) throw err; // вход не удался — смысла продолжать нет
         outcome.error = describeError(err);

@@ -59,6 +59,10 @@ export interface Exclusion {
 interface StoreData {
   guildId: string | null;
   channelId: string | null;
+  /** false — автопроверка по расписанию выключена (ручные /sklad run и /sklad force работают). */
+  enabled: boolean;
+  /** До какого момента (UTC ms) логи уже проверены и отчёт ушёл в канал; от него считает /sklad force. */
+  lastCheckedUntilMs: number | null;
   /** Сервер на сайте (Redwood = 17). */
   siteServerId: string;
   factions: FactionSetting[];
@@ -95,6 +99,8 @@ function emptyStore(): StoreData {
   return {
     guildId: null,
     channelId: null,
+    enabled: true,
+    lastCheckedUntilMs: null,
     siteServerId: process.env.WH_SERVER_ID?.trim() || "17",
     factions: defaultFactions(),
     rules: defaultRules(),
@@ -117,6 +123,8 @@ function load(): StoreData {
       return {
         guildId: typeof raw.guildId === "string" ? raw.guildId : base.guildId,
         channelId: typeof raw.channelId === "string" ? raw.channelId : base.channelId,
+        enabled: typeof raw.enabled === "boolean" ? raw.enabled : base.enabled,
+        lastCheckedUntilMs: typeof raw.lastCheckedUntilMs === "number" ? raw.lastCheckedUntilMs : base.lastCheckedUntilMs,
         siteServerId: typeof raw.siteServerId === "string" ? raw.siteServerId : base.siteServerId,
         factions: Array.isArray(raw.factions) ? raw.factions : base.factions,
         rules: Array.isArray(raw.rules) && raw.rules.length ? raw.rules : base.rules,
@@ -164,6 +172,18 @@ export const getExcludedIds = (): Set<string> => new Set(data.exclusions.map((e)
 export function setChannel(guildId: string, channelId: string): void {
   data.guildId = guildId;
   data.channelId = channelId;
+  persist();
+}
+
+export function setEnabled(value: boolean): void {
+  data.enabled = value;
+  persist();
+}
+
+/** Сдвигает «проверено до» вперёд (назад не двигает). */
+export function markCheckedUntil(ms: number): void {
+  if (data.lastCheckedUntilMs !== null && ms <= data.lastCheckedUntilMs) return;
+  data.lastCheckedUntilMs = ms;
   persist();
 }
 

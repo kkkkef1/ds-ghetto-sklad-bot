@@ -2,6 +2,10 @@
 //
 // Настройки автоматической проверки (канал, фракции, пороги, исключения).
 // Доступ — как у настроек /capt: создатель и модераторы, только на главном сервере.
+// Канал для отчётов можно указать на любом сервере, где есть бот (по ID/ссылке).
+
+const FORCE_MAX_HOURS = 24;
+const FORCE_MIN_MS = 2 * 60_000;
 
 import {
   ChannelType,
@@ -10,6 +14,8 @@ import {
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
 } from "discord.js";
+import { formatDateTime } from "../activity/time.js";
+import { parseIds } from "../activity/util.js";
 import { MAIN_GUILD_ID } from "../captTracker/config.js";
 import { isCreatorOrModerator } from "../captTracker/store.js";
 import { ClientIO } from "../warehouse/discordIO.js";
@@ -26,12 +32,15 @@ import {
   getFactions,
   getRules,
   getSettings,
+  markCheckedUntil,
   removeExclusion,
   removeFaction,
   removeRule,
   resetRules,
   setChannel,
+  setEnabled,
   setKitCooldown,
+  setLastRunSummary,
   setNetReturns,
   updateRule,
   type Rule,
@@ -54,9 +63,21 @@ export const data = new SlashCommandBuilder()
       .addChannelOption((o) =>
         o
           .setName("channel")
-          .setDescription("Текстовый канал")
+          .setDescription("Текстовый канал этого сервера")
           .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
-          .setRequired(true)
+      )
+      .addStringOption((o) =>
+        o.setName("id").setDescription("ID или ссылка на канал (можно с другого сервера, где есть бот)")
+      )
+  )
+  .addSubcommand((sc) => sc.setName("enable").setDescription("Включить автопроверку склада по расписанию"))
+  .addSubcommand((sc) => sc.setName("disable").setDescription("Выключить автопроверку склада (ручные проверки остаются)"))
+  .addSubcommand((sc) =>
+    sc
+      .setName("force")
+      .setDescription("Принудительная проверка: с момента последней проверки до сейчас")
+      .addBooleanOption((o) =>
+        o.setName("post").setDescription("true (по умолчанию) — отправить отчёт в канал и зачесть проверку; false — показать только вам")
       )
   )
   .addSubcommand((sc) =>
@@ -193,16 +214,47 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       case "status":
         return void (await reply(renderStatus()));
       case "channel": {
-        const channel = interaction.options.getChannel("channel", true);
-        const me = interaction.guild ? await interaction.guild.members.fetchMe() : null;
-        const guildChannel = interaction.guild?.channels.cache.get(channel.id);
-        const perms = me && guildChannel ? guildChannel.permissionsFor(me) : null;
-        if (!perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])) {
-          return void (await reply(`У бота нет прав «Просмотр канала» и «Отправка сообщений» в <#${channel.id}>.`));
+        const picked = interaction.options.getChannel("channel");
+        const rawId = interaction.options.getString("id");
+        // В ссылке discord.com/channels/СЕРВЕР/КАНАЛ нужен последний ID.
+        const channelId = picked?.id ?? (rawId ? parseIds(rawId).at(-1) : undefined);
+        if (!channelId) {
+          return void (await reply("Укажите канал: выберите его в поле «channel» или вставьте ID/ссылку в поле «id»."));
         }
-        setChannel(interaction.guildId!, channel.id);
-        return void (await reply(`Отчёты о складе теперь приходят в <#${channel.id}>.`));
+        const channel = await interaction.client.channels.fetch(channelId).catch(() => null);
+        if (!channel || channel.isDMBased() || !channel.isTextBased()) {
+          return void (await reply(`Текстовый канал с ID ${channelId} не найден. Бот должен быть на сервере, где этот канал находится.`));
+        }
+        const me = await channel.guild.members.fetchMe();
+        const perms = channel.permissionsFor(me);
+        if (!perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])) {
+          return void (await reply(`У бота нет прав «Просмотр канала» и «Отправка сообщений» в <#${channel.id}> (сервер «${channel.guild.name}»).`));
+        }
+        setChannel(channel.guild.id, channel.id);
+        return void (await reply(`Отчёты о складе теперь приходят в <#${channel.id}> (сервер «${channel.guild.name}»).`));
       }
+      case "enable": {
+        setEnabled(true);
+        return void (
+          await reply(
+            "Автопроверка склада включена. Проверки идут по расписанию (00:00, 06:00, 12:00, 18:00 МСК). " +
+              "Если после последнего периода прошло меньше 3 часов и он не проверен, бот проверит его сам — может прийти запрос кода в личку. " +
+              "Пропущенное за время выключения можно добрать командой /sklad force."
+          )
+        );
+      }
+      case "disable": {
+        setEnabled(false);
+        return void (
+          await reply(
+            "Автопроверка склада выключена: по расписанию бот больше не заходит на сайт и ничего не присылает." +
+              (isRunning() ? " Проверка, которая идёт прямо сейчас, доработает до конца." : "") +
+              " Ручные команды (/sklad run, /sklad force) продолжают работать. Включить обратно: /sklad enable."
+          )
+        );
+      }
+      case "force":
+        return void (await handleForce(interaction));
       case "run":
         return void (await handleRun(interaction));
       case "returns": {
@@ -303,6 +355,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 function renderStatus(): string {
   const s = getSettings();
   const lines = [
+    `**Автопроверка:** ${s.enabled ? "включена" : "выключена (/sklad enable — включить)"}`,
+    `**Проверено до:** ${s.lastCheckedUntilMs ? `${formatDateTime(s.lastCheckedUntilMs)} МСК` : "нет данных (/sklad force проверит с начала последнего периода)"}`,
     `**Канал отчётов:** ${s.channelId ? `<#${s.channelId}>` : "не задан (/sklad channel) — без него автопроверка не запускается"}`,
     `**Фракции:** ${getFactions().map((f) => f.name).join(", ") || "нет"}`,
     `**Возвраты вычитаются:** ${s.netReturns ? "да" : "нет"}`,
@@ -325,6 +379,72 @@ async function safeFollowUp(interaction: ChatInputCommandInteraction, options: P
     await interaction.followUp(options);
   } catch (err) {
     console.warn("[warehouse] Не удалось отправить ответ на /sklad run (токен команды истёк?):", err instanceof Error ? err.message : err);
+  }
+}
+
+/** Принудительная проверка: от конца последней проверки до момента команды. */
+async function handleForce(interaction: ChatInputCommandInteraction): Promise<void> {
+  const owner = ownerId();
+  if (!owner) {
+    await interaction.reply({ content: "Не задан WH_OWNER_ID в .env — боту некуда присылать запрос кода входа.", ephemeral: true });
+    return;
+  }
+  if (isRunning()) {
+    await interaction.reply({ content: "Проверка уже выполняется. Подождите окончания.", ephemeral: true });
+    return;
+  }
+  const post = interaction.options.getBoolean("post") ?? true;
+  const settings = getSettings();
+  if (post && !settings.channelId) {
+    await interaction.reply({ content: "Канал отчётов не задан (/sklad channel). Либо задайте его, либо запустите с post:false, чтобы увидеть результат только вам.", ephemeral: true });
+    return;
+  }
+
+  const now = Date.now();
+  const notes: string[] = [];
+  let startMs = settings.lastCheckedUntilMs ?? lastCompletedPeriod(now).startMs;
+  if (settings.lastCheckedUntilMs === null) notes.push("Сохранённой предыдущей проверки нет — беру с начала последнего закончившегося периода.");
+  const capMs = FORCE_MAX_HOURS * 3_600_000;
+  if (now - startMs > capMs) {
+    startMs = now - capMs;
+    notes.push(`С последней проверки прошло больше ${FORCE_MAX_HOURS} ч — беру только последние ${FORCE_MAX_HOURS} ч (более раннее — через /sklad run hours:…).`);
+  }
+  if (now - startMs < FORCE_MIN_MS) {
+    await interaction.reply({ content: "С последней проверки прошло меньше 2 минут — проверять пока нечего.", ephemeral: true });
+    return;
+  }
+  const period: Period = { key: `force-${now}`, startMs, endMs: now };
+
+  await interaction.deferReply({ ephemeral: true });
+  await interaction.editReply(
+    [`Запускаю принудительную проверку за ${describePeriod(period)}. Если сайт попросит код Google Authenticator, бот напишет владельцу в личку.`, ...notes].join("\n").slice(0, 1990)
+  );
+
+  try {
+    const result = await runCheck(period, new ClientIO(interaction.client, owner));
+    const summary = summarize(result);
+    if (post) {
+      const delivered = result.messages.length ? await postToChannel(interaction.client, result.messages) : true;
+      const counted = result.ok && delivered;
+      if (counted) markCheckedUntil(now);
+      setLastRunSummary({ at: Date.now(), period: period.key, ok: result.ok, text: summary });
+      const tail = !delivered
+        ? "Не удалось отправить в канал: проверьте /sklad channel. Проверка не зачтена."
+        : !result.ok
+          ? "Часть фракций прочитать не удалось — проверка не зачтена, повторите /sklad force."
+          : result.messages.length
+            ? "Отчёты отправлены в канал. Проверка зачтена."
+            : "Подозрительных нет — в канал ничего не отправлено. Проверка зачтена.";
+      await safeFollowUp(interaction, { content: `${summary}\n${tail}`.slice(0, 1990), ephemeral: true });
+    } else {
+      await safeFollowUp(interaction, { content: `${summary}\nПоказано только вам, проверка не зачтена.`.slice(0, 1990), ephemeral: true });
+      for (const message of result.messages.slice(0, 5)) {
+        await safeFollowUp(interaction, { content: message, ephemeral: true, allowedMentions: { parse: [] } });
+      }
+      if (!result.messages.length) await safeFollowUp(interaction, { content: "Подозрительных нет.", ephemeral: true });
+    }
+  } catch (err) {
+    await safeFollowUp(interaction, { content: `❌ Проверка не удалась: ${err instanceof Error ? err.message : String(err)}`.slice(0, 1990), ephemeral: true });
   }
 }
 

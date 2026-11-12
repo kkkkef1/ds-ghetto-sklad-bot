@@ -31,6 +31,23 @@ export function lastCompletedPeriod(nowMs: number): Period {
   return periodEndingAt(boundary);
 }
 
+/**
+ * Режет окно [startMs, endMs) по границам 6-часовых периодов (00/06/12/18 МСК).
+ * Пороги настроены на период 6 часов, поэтому длинное окно проверяется по частям.
+ * Для обычного периода возвращается он же.
+ */
+export function splitIntoPeriods(startMs: number, endMs: number): Period[] {
+  const result: Period[] = [];
+  let from = startMs;
+  while (from < endMs) {
+    const boundary = Math.floor((from + MSK_OFFSET_MS) / PERIOD_MS) * PERIOD_MS - MSK_OFFSET_MS + PERIOD_MS;
+    const to = Math.min(boundary, endMs);
+    result.push({ key: periodEndingAt(boundary).key, startMs: from, endMs: to });
+    from = to;
+  }
+  return result;
+}
+
 /** «12.11.2026 12:00–18:00 МСК» */
 export function describePeriod(p: { startMs: number; endMs: number }): string {
   const s = new Date(p.startMs + MSK_OFFSET_MS);

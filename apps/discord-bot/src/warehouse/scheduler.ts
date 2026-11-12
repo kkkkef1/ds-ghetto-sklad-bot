@@ -10,7 +10,7 @@ import type { Client, TextBasedChannel } from "discord.js";
 import { ClientIO } from "./discordIO.js";
 import { lastCompletedPeriod, type Period } from "./periods.js";
 import { isRunning, runCheck, summarize } from "./runner.js";
-import { getSettings, isPeriodDone, markPeriodDone, setLastRunSummary } from "./store.js";
+import { getSettings, isPeriodDone, markCheckedUntil, markPeriodDone, setLastRunSummary } from "./store.js";
 
 const TICK_MS = 60_000;
 const PERIOD_DELAY_MIN = 2;
@@ -45,10 +45,13 @@ export async function runPeriod(client: Client, period: Period): Promise<void> {
   const io = new ClientIO(client, owner);
   try {
     const result = await runCheck(period, io);
+    let delivered = true;
     if (result.messages.length) {
-      const delivered = await postToChannel(client, result.messages);
+      delivered = await postToChannel(client, result.messages);
       if (!delivered) await io.notify("⚠️ Результаты есть, но канал для отчётов не настроен или недоступен (/sklad channel).");
     }
+    // «Проверено до» двигаем, только если всё прочиталось и отчёт дошёл: иначе /sklad force доберёт это окно.
+    if (result.ok && delivered) markCheckedUntil(period.endMs);
     setLastRunSummary({ at: Date.now(), period: period.key, ok: result.ok, text: summarize(result) });
     // Период считается обработанным, даже если часть фракций не прочиталась: повтор целиком
     // продублировал бы уже отправленные отчёты. Недостающее владелец добирает вручную (/sklad run).
@@ -62,6 +65,7 @@ export async function runPeriod(client: Client, period: Period): Promise<void> {
 }
 
 async function tick(client: Client): Promise<void> {
+  if (!getSettings().enabled) return; // автопроверка выключена командой /sklad disable
   const now = Date.now();
   const period = lastCompletedPeriod(now);
   if (isPeriodDone(period.key) || isRunning()) return;
