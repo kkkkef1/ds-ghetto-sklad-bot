@@ -6,36 +6,27 @@
 //
 // Замечание: в личных сообщениях бот не может удалять чужие сообщения, поэтому
 // код остаётся в переписке. Он одноразовый и живёт ~30 секунд, так что риск
-// небольшой; позже код можно принимать через эфемерную слэш-команду, после
-// которой в чате ничего не остаётся.
+// небольшой.
+//
+// Два режима: ClientIO работает на уже запущенном клиенте основного бота,
+// DiscordIO.create() поднимает свой временный клиент (для прототипа и ручных проверок).
 
-import { Client, Events, GatewayIntentBits, Partials, type User } from "discord.js";
+import { Client, Events, GatewayIntentBits, Partials } from "discord.js";
 import { normalizeCode, type OperatorIO } from "./io.js";
 
 const MAX_TEXT = 1900;
 
-export class DiscordIO implements OperatorIO {
-  private constructor(
+export class ClientIO implements OperatorIO {
+  constructor(
     private readonly client: Client,
-    private readonly owner: User
+    private readonly ownerId: string,
+    private readonly ownsClient = false
   ) {}
-
-  /** Свой клиент: прототип можно запускать отдельно от основного бота. */
-  static async create(token: string, ownerId: string): Promise<DiscordIO> {
-    const client = new Client({
-      intents: [GatewayIntentBits.DirectMessages],
-      partials: [Partials.Channel],
-    });
-    const ready = new Promise<void>((resolve) => client.once(Events.ClientReady, () => resolve()));
-    await client.login(token);
-    await ready;
-    const owner = await client.users.fetch(ownerId);
-    return new DiscordIO(client, owner);
-  }
 
   async notify(text: string, attachmentPath?: string): Promise<void> {
     try {
-      await this.owner.send({
+      const owner = await this.client.users.fetch(this.ownerId);
+      await owner.send({
         content: text.slice(0, MAX_TEXT),
         files: attachmentPath ? [attachmentPath] : [],
       });
@@ -46,14 +37,15 @@ export class DiscordIO implements OperatorIO {
   }
 
   async askCode(prompt: string, timeoutMs: number): Promise<string | null> {
-    const dm = await this.owner.createDM();
+    const owner = await this.client.users.fetch(this.ownerId);
+    const dm = await owner.createDM();
     await this.notify(prompt);
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       let reply;
       try {
         const got = await dm.awaitMessages({
-          filter: (m) => m.author.id === this.owner.id,
+          filter: (m) => m.author.id === this.ownerId,
           max: 1,
           time: deadline - Date.now(),
           errors: ["time"],
@@ -71,6 +63,20 @@ export class DiscordIO implements OperatorIO {
   }
 
   async close(): Promise<void> {
-    await this.client.destroy();
+    if (this.ownsClient) await this.client.destroy();
+  }
+}
+
+export class DiscordIO {
+  /** Свой клиент: прототип можно запускать отдельно от основного бота. */
+  static async create(token: string, ownerId: string): Promise<ClientIO> {
+    const client = new Client({
+      intents: [GatewayIntentBits.DirectMessages],
+      partials: [Partials.Channel],
+    });
+    const ready = new Promise<void>((resolve) => client.once(Events.ClientReady, () => resolve()));
+    await client.login(token);
+    await ready;
+    return new ClientIO(client, ownerId, true);
   }
 }

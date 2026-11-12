@@ -13,3 +13,4 @@ dist/
 apps/discord-bot/data/browser-profile/
 apps/discord-bot/data/wh-debug/
 apps/discord-bot/data/wh-proto-output.json
+apps/discord-bot/data/warehouse-store.json

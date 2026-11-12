@@ -6,6 +6,7 @@ import * as captAdmin from "./commands/captAdmin.js";
 import * as announce from "./commands/announce.js";
 import * as mp from "./commands/mp.js";
 import * as meeting from "./commands/meeting.js";
+import * as sklad from "./commands/sklad.js";
 
 const commands = [
   startSession.data.toJSON(),
@@ -14,6 +15,7 @@ const commands = [
   announce.data.toJSON(),
   mp.data.toJSON(),
   meeting.data.toJSON(),
+  sklad.data.toJSON(),
 ];
 
 /**

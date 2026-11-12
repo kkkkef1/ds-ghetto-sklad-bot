@@ -13,6 +13,8 @@ import * as captAdmin from "./commands/captAdmin.js";
 import * as announce from "./commands/announce.js";
 import * as mp from "./commands/mp.js";
 import * as meeting from "./commands/meeting.js";
+import * as sklad from "./commands/sklad.js";
+import { initWarehouse } from "./warehouse/scheduler.js";
 import { CONFIRM_PREFIX, MARK_PREFIX } from "./activity/render.js";
 import { handleConfirmButton, handleMarkButton, initActivity } from "./activity/service.js";
 import { CANCEL_BUTTON_PREFIX, handleCancelButton, initCaptTracker } from "./captTracker/index.js";
@@ -29,6 +31,7 @@ const commands = new Map<string, Command>([
   [announce.data.name, announce],
   [mp.data.name, mp],
   [meeting.data.name, meeting],
+  [sklad.data.name, sklad],
 ]);
 
 const client = new Client({
@@ -36,6 +39,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent, // required to read plain-text log dumps, not just slash commands
+    GatewayIntentBits.DirectMessages, // код Google Authenticator для входа на сайт приходит владельцем в личку
     GatewayIntentBits.GuildMembers, // привилегированный: список админов по ролям для проверки присутствия МП (включить в Developer Portal)
   ],
   partials: [Partials.Channel, Partials.Message],
@@ -64,6 +68,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       [captAdmin.data.name]: captAdmin.autocomplete,
       [mp.data.name]: mp.autocomplete,
       [meeting.data.name]: meeting.autocomplete,
+      [sklad.data.name]: sklad.autocomplete,
     };
     const handler = autocompleters[interaction.commandName];
     if (handler) {
@@ -135,6 +140,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
 initCaptTracker(client);
 // Планировщик МП и собраний: анонсы, напоминания, итоги.
 initActivity(client);
+// Автопроверка склада фракций: 4 раза в сутки читает логи gta5rp.com и шлёт подозрительных в канал.
+initWarehouse(client);
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
