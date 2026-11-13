@@ -42,6 +42,9 @@ export interface RunResult {
   notices: string[];
 }
 
+/** Номер сборки: показывается в сводке и в /sklad status, чтобы видеть, какой код реально запущен на сервере. */
+export const BUILD_ID = "2026-11-13.r5";
+
 let running = false;
 export const isRunning = (): boolean => running;
 
@@ -155,7 +158,7 @@ function describeError(err: unknown): string {
 
 /** Короткая сводка для личного сообщения владельцу и для /sklad status. */
 export function summarize(result: RunResult): string {
-  const lines = [`Период ${describePeriod(result.period)}:`];
+  const lines = [`Период ${describePeriod(result.period)} (сборка ${BUILD_ID}):`];
   for (const o of result.outcomes) {
     if (o.error) lines.push(`• ${o.factionName}: ${o.error}`);
     else

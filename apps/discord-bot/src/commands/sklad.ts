@@ -21,7 +21,7 @@ import { MAIN_GUILD_ID } from "../captTracker/config.js";
 import { isCreatorOrModerator } from "../captTracker/store.js";
 import { ClientIO } from "../warehouse/discordIO.js";
 import { describePeriod, formatSchedule, lastCompletedPeriod, type Period } from "../warehouse/periods.js";
-import { isRunning, runCheck, summarize } from "../warehouse/runner.js";
+import { BUILD_ID, isRunning, runCheck, summarize } from "../warehouse/runner.js";
 import { ownerId, postToChannel } from "../warehouse/scheduler.js";
 import {
   KNOWN_FACTIONS,
@@ -420,6 +420,7 @@ function renderStatus(): string {
     `**Возвраты вычитаются:** ${s.netReturns ? "да" : "нет"}`,
     `**Перезарядка наборов:** ${s.kitCooldownCheck ? `проверка включена, порог ${s.kitCooldownViolations}` : "проверка выключена"}`,
     `**Исключений:** ${s.exclusions.length}`,
+    `**Сборка:** ${BUILD_ID}`,
     `**Расписание:** ${formatSchedule(s.scheduleMinutes)} МСК (запуск через ~2 минуты после конца периода; менять: /sklad schedule)`,
     "",
     "**Пороги за период:**",
