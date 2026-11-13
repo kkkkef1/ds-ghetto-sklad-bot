@@ -14,7 +14,7 @@ export interface SearchParams {
   serverId: string;
   /** Код фракции: F_GANG_BLOODS и т.п. */
   faction: string;
-  /** Дата «от»/«до» в формате дд/мм/гггг (у сайта только дни, без времени). */
+  /** Дата «от»/«до» в формате сайта дд.мм.гггг, например 13.11.2026 (только дни, без времени). */
   dateFrom?: string;
   dateTo?: string;
   /** Фильтр «Действие» (подстрока текста). */
@@ -115,6 +115,21 @@ interface RawPage {
   hasTable: boolean;
 }
 
+/** Как поле даты «от» выглядит на странице (тип, подсказка формата) — для диагностики. */
+export async function describeDateInput(page: Page): Promise<string> {
+  try {
+    return await page.evaluate<string>(`(() => {
+      var el = document.getElementById('faction_logs_time_from');
+      if (!el) return 'поле «от» не найдено';
+      var parts = ['type=' + el.type, 'placeholder=' + (el.placeholder || ''), 'value=' + (el.value || '')];
+      for (var i = 0; i < el.attributes.length; i++) { var a = el.attributes[i]; if (/^data-|pattern|format|mask/i.test(a.name)) parts.push(a.name + '=' + a.value); }
+      return parts.join(', ');
+    })()`);
+  } catch {
+    return "не удалось прочитать";
+  }
+}
+
 export async function searchFactionLogs(page: Page, params: SearchParams): Promise<SearchResult> {
   // page.evaluate со строкой вычисляет выражение и не передаёт аргумент, поэтому
   // параметры вшиваются в вызов функции как JSON.
@@ -131,7 +146,8 @@ export async function searchFactionLogs(page: Page, params: SearchParams): Promi
   // Ждём, пока таблица обновится (или всплывёт капча), и затем — пока она перестанет меняться:
   // сразу после клика сайт может показать промежуточное состояние (загрузку), и чтение в этот момент
   // дало бы «0 строк». Если результат вообще не изменился (тот же поиск повторён) — через таймаут читаем то, что есть.
-  const deadline = Date.now() + 30_000;
+  const startedAt = Date.now();
+  const deadline = startedAt + 30_000;
   let changed = false;
   let last = before.html;
   let lastChangeAt = Date.now();
@@ -144,7 +160,11 @@ export async function searchFactionLogs(page: Page, params: SearchParams): Promi
       last = now.html;
       lastChangeAt = Date.now();
     }
-    if (!changed) continue;
+    // Пустой результат после пустого результата выглядит как «ничего не изменилось» — не ждём весь таймаут.
+    if (!changed) {
+      if (Date.now() - startedAt >= 12_000) break;
+      continue;
+    }
     const stableMs = Date.now() - lastChangeAt;
     const hasRows = now.html.includes("<td");
     if ((hasRows && stableMs >= 2_000) || stableMs >= 6_000) break;

@@ -43,7 +43,7 @@ export interface RunResult {
 }
 
 /** Номер сборки: показывается в сводке и в /sklad status, чтобы видеть, какой код реально запущен на сервере. */
-export const BUILD_ID = "2026-11-13.r5";
+export const BUILD_ID = "2026-11-13.r7";
 
 let running = false;
 export const isRunning = (): boolean => running;
@@ -85,7 +85,7 @@ export async function runCheck(period: Period, io: OperatorIO, opts: { onlyFacti
         if (fetched.rows.length === 0) {
           // Ни одной строки за несколько часов у фракции — почти наверняка проблема чтения, а не «тишина»: сообщаем и не считаем проверку успешной.
           const seen = fetched.newestMs !== null && fetched.oldestMs !== null ? `, самая новая строка ${formatDateTime(fetched.newestMs)}, самая старая ${formatDateTime(fetched.oldestMs)}` : "";
-          outcome.error = `за период не прочитано ни одной строки (сайт показал всего ${fetched.total}${seen}; вариант фильтра дат ${fetched.attempt + 1})`;
+          outcome.error = `за период не прочитано ни одной строки (сайт показал всего ${fetched.total}, дата «от» ${fetched.dateFrom}${seen})${fetched.dateInput ? `. Поле даты на сайте: ${fetched.dateInput}` : ""}`;
           continue;
         }
 

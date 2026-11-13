@@ -6,8 +6,8 @@
 
 import type { Page } from "playwright";
 import { parseSiteTime } from "./actions.js";
-import { openResultPage, raiseRowCount, searchFactionLogs, type LogRow, type SearchParams, type SearchResult } from "./logsPage.js";
-import { siteDateAfter, siteDateBefore } from "./periods.js";
+import { describeDateInput, openResultPage, raiseRowCount, searchFactionLogs, type LogRow, type SearchResult } from "./logsPage.js";
+import { siteDateBefore } from "./periods.js";
 
 export interface WindowFetchParams {
   baseUrl: string;
@@ -29,8 +29,10 @@ export interface WindowFetchResult {
   /** Самая новая и самая старая строки, которые вообще попались (не только в окне) — для диагностики «0 строк». */
   newestMs: number | null;
   oldestMs: number | null;
-  /** Какой вариант фильтра дат сработал (0 — основной). */
-  attempt: number;
+  /** Использованная дата «от» (дд.мм.гггг). */
+  dateFrom: string;
+  /** Как выглядит поле даты на сайте — только если результат пустой (для диагностики). */
+  dateInput?: string;
 }
 
 const DEFAULT_MAX_PAGES = 60;
@@ -41,28 +43,16 @@ export async function fetchWindowRows(page: Page, p: WindowFetchParams): Promise
   if ((await page.locator("#faction_logs_server_id").count()) === 0) {
     await page.goto(`${p.baseUrl}/logs?act=faction`, { waitUntil: "domcontentloaded" });
   }
-  // Дата «от» задаётся ВСЕГДА (без неё сайт отдаст логи за все годы). Дата «до» не обязательна:
-  // без неё сайт отдаёт всё до момента запроса. Если с одной датой «от» пришла пустая таблица,
-  // пробуем ещё раз с явной границей «до» — но никогда не пропускаем «от».
-  const variants: Array<Pick<SearchParams, "dateFrom" | "dateTo">> = [
-    { dateFrom: siteDateBefore(p.startMs) },
-    { dateFrom: siteDateBefore(p.startMs), dateTo: siteDateAfter(p.endMs) },
-  ];
-  const search = (v: Pick<SearchParams, "dateFrom" | "dateTo">) => searchFactionLogs(page, { serverId: p.serverId, faction: p.faction, ...v });
+  // Дата «от» задаётся ВСЕГДА в формате сайта «дд.мм.гггг» (без неё сайт отдаст логи за все годы).
+  // Дата «до» не ставится: без неё сайт отдаёт всё до момента запроса.
+  const dateFrom = siteDateBefore(p.startMs);
+  const search = () => searchFactionLogs(page, { serverId: p.serverId, faction: p.faction, dateFrom });
 
-  let attempt = 0;
-  let used = variants[0];
-  let first: SearchResult = await search(used);
-  while (first.rows.length === 0 && attempt < variants.length - 1) {
-    attempt++;
-    used = variants[attempt];
-    console.warn(`[warehouse] ${p.faction}: пустой результат, пробую другой фильтр дат (вариант ${attempt + 1}/${variants.length}).`);
-    first = await search(used);
-  }
-
+  let first: SearchResult = await search();
+  const dateInput = first.rows.length === 0 ? await describeDateInput(page) : undefined;
   if (await raiseRowCount(page, first)) {
     // Настройка поменялась — повторяем поиск, чтобы страницы стали по максимуму строк.
-    first = await search(used);
+    first = await search();
   }
 
   const seen = new Set<number>();
@@ -110,6 +100,7 @@ export async function fetchWindowRows(page: Page, p: WindowFetchParams): Promise
     total: first.total,
     newestMs: Number.isFinite(newestMs) ? newestMs : null,
     oldestMs: Number.isFinite(oldestAll) ? oldestAll : null,
-    attempt,
+    dateFrom,
+    dateInput,
   };
 }

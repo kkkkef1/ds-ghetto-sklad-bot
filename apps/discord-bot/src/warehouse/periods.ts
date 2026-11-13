@@ -103,16 +103,7 @@ export function describePeriod(p: { startMs: number; endMs: number }): string {
   return `${startPart}–${endPart} МСК`;
 }
 
-/** Дата «дд/мм/гггг» для фильтра сайта: день, предшествующий началу окна (сам «сегодня» сайт отдаёт пустым). */
+/** Дата «дд.мм.гггг» для фильтра сайта «от»: день, предшествующий началу окна (с запасом). */
 export function siteDateBefore(startMs: number): string {
-  const prev = mskDateKey(startMs - 24 * 60 * MINUTE_MS);
-  const [y, m, d] = prev.split("-");
-  return `${d}/${m}/${y}`;
-}
-
-/** Дата «дд/мм/гггг» для фильтра сайта «до»: день после конца окна (запас на случай, если «до» не включает сам день). */
-export function siteDateAfter(endMs: number): string {
-  const next = mskDateKey(endMs + 24 * 60 * MINUTE_MS);
-  const [y, m, d] = next.split("-");
-  return `${d}/${m}/${y}`;
+  return formatDateKey(mskDateKey(startMs - 24 * 60 * MINUTE_MS));
 }

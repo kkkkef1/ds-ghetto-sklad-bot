@@ -15,7 +15,7 @@ import { ConsoleIO, type OperatorIO } from "./io.js";
 import { CaptchaRequiredError, searchFactionLogs } from "./logsPage.js";
 import { LoginError, SiteSession } from "./siteSession.js";
 
-/** Сегодняшняя дата по Москве в формате дд/мм/гггг — так её хочет фильтр сайта. */
+/** Сегодняшняя дата по Москве в формате дд.мм.гггг — так её хочет фильтр сайта. */
 function todayMsk(): string {
   const parts = new Intl.DateTimeFormat("ru-RU", {
     timeZone: "Europe/Moscow",
@@ -24,7 +24,7 @@ function todayMsk(): string {
     year: "numeric",
   }).formatToParts(new Date());
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
-  return `${get("day")}/${get("month")}/${get("year")}`;
+  return `${get("day")}.${get("month")}.${get("year")}`;
 }
 
 async function createIO(): Promise<OperatorIO> {
