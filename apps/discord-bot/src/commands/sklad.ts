@@ -6,6 +6,7 @@
 
 const FORCE_MAX_HOURS = 24;
 const FORCE_MIN_MS = 2 * 60_000;
+const DATE_CHECK_MAX_HOURS = 72;
 
 import {
   ChannelType,
@@ -14,12 +15,12 @@ import {
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
 } from "discord.js";
-import { formatDateTime } from "../activity/time.js";
+import { addDaysToKey, formatDateTime, mskToUtcMs, parseDateInput, parseTime } from "../activity/time.js";
 import { parseIds } from "../activity/util.js";
 import { MAIN_GUILD_ID } from "../captTracker/config.js";
 import { isCreatorOrModerator } from "../captTracker/store.js";
 import { ClientIO } from "../warehouse/discordIO.js";
-import { describePeriod, lastCompletedPeriod, type Period } from "../warehouse/periods.js";
+import { describePeriod, formatSchedule, lastCompletedPeriod, type Period } from "../warehouse/periods.js";
 import { isRunning, runCheck, summarize } from "../warehouse/runner.js";
 import { ownerId, postToChannel } from "../warehouse/scheduler.js";
 import {
@@ -42,6 +43,8 @@ import {
   setKitCooldown,
   setLastRunSummary,
   setNetReturns,
+  setSchedule,
+  DEFAULT_SCHEDULE_MINUTES,
   updateRule,
   type Rule,
 } from "../warehouse/store.js";
@@ -91,6 +94,24 @@ export const data = new SlashCommandBuilder()
   )
   .addSubcommand((sc) =>
     sc
+      .setName("date")
+      .setDescription("Проверить склад за указанную дату и время (результат показывается только вам)")
+      .addStringOption((o) => o.setName("date").setDescription("Дата начала: дд.мм.гггг (или дд.мм — текущий год)").setRequired(true))
+      .addStringOption((o) => o.setName("from").setDescription("Время начала по МСК, чч:мм (по умолчанию 00:00)"))
+      .addStringOption((o) => o.setName("to").setDescription("Время конца по МСК, чч:мм (по умолчанию 00:00 = до конца суток)"))
+      .addStringOption((o) => o.setName("end_date").setDescription("Дата конца, если окно больше одних суток: дд.мм.гггг"))
+      .addStringOption((o) => o.setName("faction").setDescription("Только эта фракция (по умолчанию — все проверяемые)").addChoices(...factionChoices))
+      .addBooleanOption((o) => o.setName("post").setDescription("Отправить результат в канал отчётов (по умолчанию — показать только вам)"))
+  )
+  .addSubcommand((sc) =>
+    sc
+      .setName("schedule")
+      .setDescription("Расписание автопроверки: во сколько заканчиваются периоды (МСК)")
+      .addStringOption((o) => o.setName("times").setDescription("Время через пробел или запятую, например: 0 6 12 18 или 02:00 14:00. Пусто — показать текущее"))
+      .addBooleanOption((o) => o.setName("reset").setDescription("true — вернуть 00:00, 06:00, 12:00, 18:00"))
+  )
+  .addSubcommand((sc) =>
+    sc
       .setName("returns")
       .setDescription("Вычитать ли возвращённое на склад из взятого")
       .addBooleanOption((o) => o.setName("enabled").setDescription("true — вычитать (по умолчанию), false — считать только «взял»").setRequired(true))
@@ -122,14 +143,14 @@ export const data = new SlashCommandBuilder()
   .addSubcommandGroup((g) =>
     g
       .setName("rule")
-      .setDescription("Пороги: что и сколько можно брать за период (6 часов)")
+      .setDescription("Пороги: что и сколько можно брать за период")
       .addSubcommand((sc) => sc.setName("list").setDescription("Все правила и пороги"))
       .addSubcommand((sc) =>
         sc
           .setName("set")
           .setDescription("Изменить пороги правила")
           .addStringOption((o) => o.setName("rule").setDescription("Правило").setRequired(true).setAutocomplete(true))
-          .addIntegerOption((o) => o.setName("limit").setDescription("Лимит за период (0 — не проверять)").setMinValue(0).setMaxValue(100000))
+          .addIntegerOption((o) => o.setName("limit").setDescription("Лимит за период: склад + наборы (0 — не проверять)").setMinValue(0).setMaxValue(100000))
           .addIntegerOption((o) => o.setName("burst_count").setDescription("Всплеск: сколько штук (0 — выключить)").setMinValue(0).setMaxValue(10000))
           .addIntegerOption((o) => o.setName("burst_minutes").setDescription("Всплеск: за сколько минут").setMinValue(1).setMaxValue(120))
       )
@@ -191,7 +212,22 @@ export async function autocomplete(interaction: AutocompleteInteraction): Promis
 function describeRule(r: Rule): string {
   const burst = r.burstCount > 0 ? `, всплеск ${r.burstCount} за ${r.burstMinutes} мин` : ", всплеск выкл.";
   const limit = r.limit > 0 ? `лимит ${r.limit}` : "лимит выкл.";
-  return `• \`${r.id}\` — ${r.label} (${r.kind === "kit" ? "набор" : "предмет"}): ${limit}${burst}; ищет: ${r.match.join(", ")}`;
+  if (r.kind === "kit") return `• \`${r.id}\` — ${r.label} (набор): ${limit} выдач${burst}; ищет: ${r.match.join(", ")}`;
+  return `• \`${r.id}\` — ${r.label}: ${limit}${burst}; ищет: ${r.match.join(", ")}`;
+}
+
+/** «0 6 12 18», «02:00, 14:30» → минуты от начала суток; null, если что-то не распознано. */
+function parseScheduleInput(input: string): number[] | null {
+  const tokens = input.split(/[\s,;]+/).filter(Boolean);
+  if (!tokens.length) return null;
+  const result = new Set<number>();
+  for (const token of tokens) {
+    const t = /^\d{1,2}$/.test(token) ? parseTime(`${token}:00`) : parseTime(token);
+    if (!t) return null;
+    const [h, m] = t.split(":").map(Number);
+    result.add(h * 60 + m);
+  }
+  return [...result].sort((a, b) => a - b);
 }
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -237,7 +273,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
         setEnabled(true);
         return void (
           await reply(
-            "Автопроверка склада включена. Проверки идут по расписанию (00:00, 06:00, 12:00, 18:00 МСК). " +
+            `Автопроверка склада включена. Проверки идут по расписанию (${formatSchedule(getSettings().scheduleMinutes)} МСК). ` +
               "Если после последнего периода прошло меньше 3 часов и он не проверен, бот проверит его сам — может прийти запрос кода в личку. " +
               "Пропущенное за время выключения можно добрать командой /sklad force."
           )
@@ -257,6 +293,28 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
         return void (await handleForce(interaction));
       case "run":
         return void (await handleRun(interaction));
+      case "date":
+        return void (await handleDate(interaction));
+      case "schedule": {
+        if (interaction.options.getBoolean("reset")) {
+          setSchedule(DEFAULT_SCHEDULE_MINUTES);
+        } else {
+          const raw = interaction.options.getString("times");
+          if (raw) {
+            const parsed = parseScheduleInput(raw);
+            if (!parsed) return void (await reply("Не разобрал время. Пример: `0 6 12 18` или `02:00, 14:30` (часы 0–23, минуты 0–59, МСК)."));
+            setSchedule(parsed);
+          }
+        }
+        const minutes = getSettings().scheduleMinutes;
+        return void (
+          await reply(
+            `**Расписание проверок (МСК):** ${formatSchedule(minutes)}\n` +
+              `Периодов в сутки: ${minutes.length}. Бот проверяет период между соседними временами через ~2 минуты после его конца. ` +
+              `Пороги в \`/sklad rule list\` действуют на один период — при смене расписания поменяйте их под длину периода.`
+          )
+        );
+      }
       case "returns": {
         const enabled = interaction.options.getBoolean("enabled", true);
         setNetReturns(enabled);
@@ -286,7 +344,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 
   if (group === "rule") {
     if (sub === "list") {
-      return void (await reply(["**Пороги за период (6 часов):**", ...getRules().map(describeRule)].join("\n").slice(0, 1990)));
+      return void (await reply(["**Пороги за период:**", ...getRules().map(describeRule)].join("\n").slice(0, 1990)));
     }
     if (sub === "reset") {
       resetRules();
@@ -362,7 +420,7 @@ function renderStatus(): string {
     `**Возвраты вычитаются:** ${s.netReturns ? "да" : "нет"}`,
     `**Перезарядка наборов:** ${s.kitCooldownCheck ? `проверка включена, порог ${s.kitCooldownViolations}` : "проверка выключена"}`,
     `**Исключений:** ${s.exclusions.length}`,
-    "**Расписание:** 00:00, 06:00, 12:00, 18:00 МСК (запуск через ~2 минуты после конца периода)",
+    `**Расписание:** ${formatSchedule(s.scheduleMinutes)} МСК (запуск через ~2 минуты после конца периода; менять: /sklad schedule)`,
     "",
     "**Пороги за период:**",
     ...getRules().map(describeRule),
@@ -449,6 +507,58 @@ async function handleForce(interaction: ChatInputCommandInteraction): Promise<vo
 }
 
 async function handleRun(interaction: ChatInputCommandInteraction): Promise<void> {
+  const hours = interaction.options.getInteger("hours");
+  const post = interaction.options.getBoolean("post") ?? false;
+  const now = Date.now();
+  const period: Period =
+    hours !== null
+      ? { key: `manual-${now}`, startMs: now - hours * 3_600_000, endMs: now }
+      : lastCompletedPeriod(now);
+  await runManual(interaction, period, post);
+}
+
+/** Проверка за указанную дату/время: /sklad date. Точку «проверено до» не двигает. */
+async function handleDate(interaction: ChatInputCommandInteraction): Promise<void> {
+  const fail = (content: string) => interaction.reply({ content, ephemeral: true });
+  const now = Date.now();
+  const startKey = parseDateInput(interaction.options.getString("date", true), now);
+  if (!startKey) return void (await fail("Не разобрал дату. Формат: дд.мм.гггг, например 12.11.2026."));
+  const from = parseTime(interaction.options.getString("from") ?? "00:00");
+  const to = parseTime(interaction.options.getString("to") ?? "00:00");
+  if (!from || !to) return void (await fail("Не разобрал время. Формат: чч:мм, например 18:00."));
+  const endDateRaw = interaction.options.getString("end_date");
+  const endKeyInput = endDateRaw ? parseDateInput(endDateRaw, now) : null;
+  if (endDateRaw && !endKeyInput) return void (await fail("Не разобрал end_date. Формат: дд.мм.гггг."));
+
+  const startMs = mskToUtcMs(startKey, from);
+  let endMs = mskToUtcMs(endKeyInput ?? startKey, to);
+  // «18:00 → 00:00» и «00:00 → 00:00» без end_date означают конец в следующие сутки.
+  if (endMs <= startMs) {
+    if (endKeyInput) return void (await fail("Конец окна раньше или равен началу."));
+    endMs = mskToUtcMs(addDaysToKey(startKey, 1), to);
+  }
+  if (startMs >= now) return void (await fail("Это время ещё не наступило — логов за него нет."));
+  const notes: string[] = [];
+  if (endMs > now) {
+    endMs = now;
+    notes.push("Конец окна в будущем — проверяю до текущего момента.");
+  }
+  if (endMs - startMs > DATE_CHECK_MAX_HOURS * 3_600_000) {
+    return void (await fail(`Окно слишком большое (максимум ${DATE_CHECK_MAX_HOURS} ч). Разбейте на несколько проверок.`));
+  }
+
+  const faction = interaction.options.getString("faction");
+  const post = interaction.options.getBoolean("post") ?? false;
+  const period: Period = { key: `date-${now}`, startMs, endMs };
+  await runManual(interaction, period, post, { onlyFactions: faction ? [faction] : undefined, notes });
+}
+
+async function runManual(
+  interaction: ChatInputCommandInteraction,
+  period: Period,
+  post: boolean,
+  extra: { onlyFactions?: string[]; notes?: string[] } = {}
+): Promise<void> {
   const owner = ownerId();
   if (!owner) {
     await interaction.reply({ content: "Не задан WH_OWNER_ID в .env — боту некуда присылать запрос кода входа.", ephemeral: true });
@@ -458,19 +568,18 @@ async function handleRun(interaction: ChatInputCommandInteraction): Promise<void
     await interaction.reply({ content: "Проверка уже выполняется. Подождите окончания.", ephemeral: true });
     return;
   }
-  const hours = interaction.options.getInteger("hours");
-  const post = interaction.options.getBoolean("post") ?? false;
-  const now = Date.now();
-  const period: Period =
-    hours !== null
-      ? { key: `manual-${now}`, startMs: now - hours * 3_600_000, endMs: now }
-      : lastCompletedPeriod(now);
+  if (post && !getSettings().channelId) {
+    await interaction.reply({ content: "Канал отчётов не задан (/sklad channel). Уберите post или задайте канал.", ephemeral: true });
+    return;
+  }
 
   await interaction.deferReply({ ephemeral: true });
-  await interaction.editReply(`Запускаю проверку за ${describePeriod(period)}. Если сайт попросит код Google Authenticator, бот напишет владельцу в личку.`);
+  await interaction.editReply(
+    [`Запускаю проверку за ${describePeriod(period)}. Если сайт попросит код Google Authenticator, бот напишет владельцу в личку.`, ...(extra.notes ?? [])].join("\n").slice(0, 1990)
+  );
 
   try {
-    const result = await runCheck(period, new ClientIO(interaction.client, owner));
+    const result = await runCheck(period, new ClientIO(interaction.client, owner), { onlyFactions: extra.onlyFactions });
     const summary = summarize(result);
     if (post) {
       const delivered = result.messages.length ? await postToChannel(interaction.client, result.messages) : true;
@@ -482,6 +591,9 @@ async function handleRun(interaction: ChatInputCommandInteraction): Promise<void
       await safeFollowUp(interaction, { content: summary.slice(0, 1990), ephemeral: true });
       for (const message of result.messages.slice(0, 5)) {
         await safeFollowUp(interaction, { content: message, ephemeral: true, allowedMentions: { parse: [] } });
+      }
+      if (result.messages.length > 5) {
+        await safeFollowUp(interaction, { content: `Показано 5 сообщений из ${result.messages.length}. Остальное — с post:true (отправить в канал).`, ephemeral: true });
       }
       if (!result.messages.length) await safeFollowUp(interaction, { content: "Подозрительных нет.", ephemeral: true });
     }

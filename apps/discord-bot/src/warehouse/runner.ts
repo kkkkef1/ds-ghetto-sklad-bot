@@ -4,7 +4,7 @@
 // анализирует и отправляет отчёт в канал. Если подозрительных нет — по этой фракции
 // сообщение не отправляется.
 
-import { parseAction, type WarehouseAction } from "./actions.js";
+import { isNotWarehouseRow, parseAction, type WarehouseAction } from "./actions.js";
 import { analyzeActions, DEFAULT_ANALYZE_OPTIONS, type Suspect } from "./analyze.js";
 import { loadSiteConfig } from "./config.js";
 import { fetchWindowRows } from "./fetchWindow.js";
@@ -42,7 +42,7 @@ let running = false;
 export const isRunning = (): boolean => running;
 
 /** Читает и анализирует, но ничего не отправляет — отправкой занимается вызывающий. */
-export async function runCheck(period: Period, io: OperatorIO): Promise<RunResult> {
+export async function runCheck(period: Period, io: OperatorIO, opts: { onlyFactions?: string[] } = {}): Promise<RunResult> {
   if (running) throw new Error("Проверка уже выполняется — дождитесь её окончания.");
   running = true;
   const settings = getSettings();
@@ -55,7 +55,9 @@ export async function runCheck(period: Period, io: OperatorIO): Promise<RunResul
     const cfg = loadSiteConfig();
     session = await SiteSession.open(cfg, io);
 
-    for (const faction of settings.factions) {
+    const factions = opts.onlyFactions?.length ? settings.factions.filter((f) => opts.onlyFactions!.includes(f.code)) : settings.factions;
+    if (!factions.length) throw new Error("Выбранная фракция не входит в список проверяемых (/sklad faction add).");
+    for (const faction of factions) {
       const outcome: FactionOutcome = { factionName: faction.name, suspects: [], rowsRead: 0, actions: 0, unparsed: 0, unparsedSamples: [], pages: 0, incomplete: false };
       outcomes.push(outcome);
       try {
@@ -76,7 +78,7 @@ export async function runCheck(period: Period, io: OperatorIO): Promise<RunResul
         for (const row of fetched.rows) {
           const a = parseAction(row);
           if (a) actions.push(a);
-          else if (/^(Берет|Кладет)/i.test(row.text)) {
+          else if (/^(Бер[её]т|Клад[её]т)/i.test(row.text) && !isNotWarehouseRow(row.text)) {
             outcome.unparsed++;
             if (outcome.unparsedSamples.length < 3) outcome.unparsedSamples.push(row.text.slice(0, 120));
           }

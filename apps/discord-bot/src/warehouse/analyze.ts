@@ -4,7 +4,9 @@
 // и правила, на выходе — игроки, у которых что-то превышено.
 //
 // Что проверяется для каждого игрока и каждого правила:
-//   • «объём»  — сколько взято за период (с вычетом возвращённого, если включено);
+//   • «объём»  — сколько взято со склада/из машин за период (с вычетом возвращённого, если включено);
+//   • «наборы» — содержимое наборов считается по штукам («Аптечка EMS x2» = 2 аптечки) и
+//     складывается в ту же категорию, что и склад: 50 наборов по 200 патронов — это 10000 патронов;
 //   • «всплеск» — сколько взято за короткое окно (например, 4 оружия за 3 минуты);
 //   • у наборов дополнительно — нарушение перезарядки: повторный набор раньше,
 //     чем истекла перезарядка, указанная в самой строке лога («| 30min:»).
@@ -33,12 +35,37 @@ export const DEFAULT_ANALYZE_OPTIONS = {
   kitCooldownToleranceSeconds: 60,
 } as const;
 
+/** Одна категория (правило) в разбивке по игроку: «Оружие — 9: AK-47 ×6, Carbine Rifle ×3». */
+export interface CategoryLine {
+  label: string;
+  total: number;
+  /** От большего к меньшему. */
+  items: { name: string; quantity: number }[];
+  /** Только для наборов: сколько наборов взято ради этой категории. */
+  kitCount?: number;
+}
+
+export interface KitIssue {
+  name: string;
+  times: number;
+  cooldownMin: number;
+}
+
 export interface Suspect {
   characterId: string;
   characterName: string;
   /** Для сортировки: чем больше, тем сильнее превышение. */
   score: number;
+  /** Что именно превышено (коротко). */
   reasons: string[];
+  /** Всё, что игрок взял со склада и из машин фракции за период. */
+  warehouse: CategoryLine[];
+  /** Всё, что игрок вернул на склад/в машины. */
+  returned: CategoryLine[];
+  /** Всё, что игрок получил наборами (по содержимому наборов, а не по числу выдач). */
+  kits: CategoryLine[];
+  /** Сколько раз взят каждый набор. */
+  kitIssues: KitIssue[];
 }
 
 interface TakeEvent {
@@ -48,10 +75,17 @@ interface TakeEvent {
 
 interface Bucket {
   rule: Rule;
+  /** Со склада/из машин. */
   taken: number;
   put: number;
+  /** Получено наборами (по содержимому). */
+  kitTaken: number;
+  /** Выдачи наборов (имя набора → моменты), из которых пришли предметы этой категории. */
+  kitTimes: Map<string, number[]>;
   events: TakeEvent[];
   byItem: Map<string, number>;
+  putByItem: Map<string, number>;
+  kitByItem: Map<string, number>;
 }
 
 export function ruleMatches(rule: Rule, action: WarehouseAction): boolean {
@@ -86,10 +120,19 @@ function maxInWindow(events: TakeEvent[], windowMs: number): number {
   return best;
 }
 
-function topItems(byItem: Map<string, number>, n = 3): string {
-  const sorted = [...byItem.entries()].sort((a, b) => b[1] - a[1]);
-  const shown = sorted.slice(0, n).map(([name, q]) => `${name} ×${q}`);
-  return shown.join(", ") + (sorted.length > n ? ", …" : "");
+function toLine(rule: Rule, byItem: Map<string, number>, kitCount?: number): CategoryLine {
+  const items = [...byItem.entries()].map(([name, quantity]) => ({ name, quantity })).sort((a, b) => b.quantity - a.quantity);
+  return { label: rule.label, total: items.reduce((sum, it) => sum + it.quantity, 0), items, ...(kitCount !== undefined ? { kitCount } : {}) };
+}
+
+function countKits(times: Map<string, number[]>): number {
+  let n = 0;
+  for (const t of times.values()) n += t.length;
+  return n;
+}
+
+function inc(map: Map<string, number>, key: string, by: number): void {
+  map.set(key, (map.get(key) ?? 0) + by);
 }
 
 interface Person {
@@ -98,42 +141,70 @@ interface Person {
   kitTakes: Map<string, { rule: Rule; times: number[]; cooldownMin: number }>;
 }
 
+function bucketOf(person: Person, rule: Rule): Bucket {
+  let bucket = person.buckets.get(rule.id);
+  if (!bucket) {
+    bucket = { rule, taken: 0, put: 0, kitTaken: 0, kitTimes: new Map(), events: [], byItem: new Map(), putByItem: new Map(), kitByItem: new Map() };
+    person.buckets.set(rule.id, bucket);
+  }
+  return bucket;
+}
+
 export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions): Suspect[] {
   const people = new Map<string, Person>();
   const sorted = [...actions].sort((a, b) => a.time - b.time || a.rowId - b.rowId);
 
   for (const a of sorted) {
     if (opts.excluded.has(a.characterId)) continue;
-    const rule = pickRule(opts.rules, a);
-    if (!rule) continue;
 
     let person = people.get(a.characterId);
-    if (!person) {
-      person = { name: a.characterName, buckets: new Map(), kitTakes: new Map() };
-      people.set(a.characterId, person);
-    }
+    const ensurePerson = (): Person => {
+      if (!person) {
+        person = { name: a.characterName, buckets: new Map(), kitTakes: new Map() };
+        people.set(a.characterId, person);
+      }
+      return person;
+    };
 
     if (a.kind === "kit") {
-      const entry = person.kitTakes.get(a.item) ?? { rule, times: [], cooldownMin: a.cooldownMin };
-      // Одна выдача набора может оставить в логе несколько подряд идущих строк (по предмету на строку).
-      const last = entry.times[entry.times.length - 1];
-      if (last === undefined || a.time - last > opts.kitMergeSeconds * 1000) entry.times.push(a.time);
-      entry.cooldownMin = Math.max(entry.cooldownMin, a.cooldownMin);
-      person.kitTakes.set(a.item, entry);
+      // 1) Сама выдача набора: сколько раз и не нарушена ли перезарядка.
+      const kitRule = pickRule(opts.rules, a);
+      if (kitRule) {
+        const p = ensurePerson();
+        const entry = p.kitTakes.get(a.item) ?? { rule: kitRule, times: [], cooldownMin: a.cooldownMin };
+        // Одна выдача набора может оставить в логе несколько подряд идущих строк (по предмету на строку).
+        const last = entry.times[entry.times.length - 1];
+        if (last === undefined || a.time - last > opts.kitMergeSeconds * 1000) entry.times.push(a.time);
+        entry.cooldownMin = Math.max(entry.cooldownMin, a.cooldownMin);
+        p.kitTakes.set(a.item, entry);
+      }
+      // 2) Содержимое набора: «Аптечка EMS x2» — это 2 аптечки, их считаем по категориям предметов.
+      for (const ki of a.kitItems) {
+        const itemAction: WarehouseAction = { ...a, kind: "take", item: ki.item, rawItem: ki.rawItem, quantity: ki.quantity, kitItems: [] };
+        const rule = pickRule(opts.rules, itemAction);
+        if (!rule) continue;
+        const bucket = bucketOf(ensurePerson(), rule);
+        bucket.kitTaken += ki.quantity;
+        inc(bucket.kitByItem, ki.item, ki.quantity);
+        // Строки одного набора подряд (до kitMergeSeconds) — одна выдача.
+        const times = bucket.kitTimes.get(a.item) ?? [];
+        const last = times[times.length - 1];
+        if (last === undefined || a.time - last > opts.kitMergeSeconds * 1000) times.push(a.time);
+        bucket.kitTimes.set(a.item, times);
+      }
       continue;
     }
 
-    let bucket = person.buckets.get(rule.id);
-    if (!bucket) {
-      bucket = { rule, taken: 0, put: 0, events: [], byItem: new Map() };
-      person.buckets.set(rule.id, bucket);
-    }
+    const rule = pickRule(opts.rules, a);
+    if (!rule) continue;
+    const bucket = bucketOf(ensurePerson(), rule);
     if (a.kind === "take") {
       bucket.taken += a.quantity;
       bucket.events.push({ t: a.time, q: a.quantity });
-      bucket.byItem.set(a.item, (bucket.byItem.get(a.item) ?? 0) + a.quantity);
+      inc(bucket.byItem, a.item, a.quantity);
     } else {
       bucket.put += a.quantity;
+      inc(bucket.putByItem, a.item, a.quantity);
     }
   }
 
@@ -145,16 +216,24 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
     for (const bucket of person.buckets.values()) {
       const { rule } = bucket;
       const net = opts.netReturns ? bucket.taken - bucket.put : bucket.taken;
+      // Содержимое наборов складывается в ту же категорию и сравнивается с тем же лимитом.
+      const total = net + bucket.kitTaken;
 
-      if (rule.limit > 0 && net > rule.limit) {
-        const returned = opts.netReturns && bucket.put > 0 ? `, вернул ${Math.min(bucket.put, bucket.taken)}` : "";
-        reasons.push(`${rule.label}: взял ${bucket.taken}${returned} → итого ${net} при лимите ${rule.limit} (${topItems(bucket.byItem)})`);
-        score += net / rule.limit;
+      if (rule.limit > 0 && total > rule.limit) {
+        const kitsCount = countKits(bucket.kitTimes);
+        const parts: string[] = [];
+        if (bucket.taken > 0) {
+          const returned = opts.netReturns && bucket.put > 0 ? `, вернул ${Math.min(bucket.put, bucket.taken)}` : "";
+          parts.push(`со склада ${bucket.taken}${returned}`);
+        }
+        if (bucket.kitTaken > 0) parts.push(`набрал из наборов ${bucket.kitTaken}, взял наборов: ${kitsCount}`);
+        reasons.push(`${rule.label}: ${parts.join("; ")} → итого ${total} (лимит ${rule.limit})`);
+        score += total / rule.limit;
       }
       if (rule.burstCount > 0 && rule.burstMinutes > 0) {
         const burst = maxInWindow(bucket.events, rule.burstMinutes * 60_000);
         if (burst >= rule.burstCount) {
-          reasons.push(`${rule.label}: ${burst} шт. за ${rule.burstMinutes} мин (порог ${rule.burstCount})`);
+          reasons.push(`${rule.label}: ${burst} шт. со склада за ${rule.burstMinutes} мин (порог ${rule.burstCount})`);
           score += burst / rule.burstCount;
         }
       }
@@ -184,7 +263,23 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
       }
     }
 
-    if (reasons.length) suspects.push({ characterId, characterName: person.name, score, reasons });
+    if (!reasons.length) continue;
+
+    // Подробности — в порядке правил, как они заданы в настройках.
+    const order = new Map(opts.rules.map((r, i) => [r.id, i]));
+    const buckets = [...person.buckets.values()].sort((x, y) => (order.get(x.rule.id) ?? 0) - (order.get(y.rule.id) ?? 0));
+    suspects.push({
+      characterId,
+      characterName: person.name,
+      score,
+      reasons,
+      warehouse: buckets.filter((b) => b.taken > 0).map((b) => toLine(b.rule, b.byItem)),
+      returned: buckets.filter((b) => b.put > 0).map((b) => toLine(b.rule, b.putByItem)),
+      kits: buckets.filter((b) => b.kitTaken > 0).map((b) => toLine(b.rule, b.kitByItem, countKits(b.kitTimes))),
+      kitIssues: [...person.kitTakes.entries()]
+        .map(([name, e]) => ({ name, times: e.times.length, cooldownMin: e.cooldownMin }))
+        .sort((x, y) => y.times - x.times),
+    });
   }
 
   return suspects.sort((a, b) => b.score - a.score);

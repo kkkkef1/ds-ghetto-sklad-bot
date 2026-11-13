@@ -1,15 +1,17 @@
 // ===================== РАСЧЁТНЫЕ ПЕРИОДЫ =====================
 //
-// Сутки по МСК делятся на 4 периода по 6 часов: 00–06, 06–12, 12–18, 18–24.
-// Проверка периода запускается сразу после его окончания.
+// Периоды задаются расписанием (/sklad schedule): список границ в течение суток по МСК.
+// По умолчанию 00:00, 06:00, 12:00, 18:00 — то есть 4 периода по 6 часов.
+// Период — это отрезок между двумя соседними границами; проверка запускается
+// сразу после его окончания.
 
 import { MINUTE_MS, MSK_OFFSET_MS, formatDateKey, mskDateKey } from "../activity/time.js";
+import { getSchedule } from "./store.js";
 
-export const PERIOD_HOURS = 6;
-export const PERIOD_MS = PERIOD_HOURS * 60 * MINUTE_MS;
+const DAY_MS = 24 * 60 * MINUTE_MS;
 
 export interface Period {
-  /** «2026-11-12-18»: дата и час окончания периода по МСК (00 — конец суток). */
+  /** «2026-11-12-18» (или «2026-11-12-1830»): дата и время окончания периода по МСК. */
   key: string;
   /** Начало (включительно) и конец (исключительно), UTC ms. */
   startMs: number;
@@ -20,32 +22,74 @@ function pad(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-export function periodEndingAt(endMs: number): Period {
+/** Начало суток по МСК (UTC ms) для момента ms. */
+function mskDayStart(ms: number): number {
+  return Math.floor((ms + MSK_OFFSET_MS) / DAY_MS) * DAY_MS - MSK_OFFSET_MS;
+}
+
+/** Все границы расписания в окрестности момента: вчера, сегодня, завтра — по возрастанию. */
+function boundariesNear(ms: number): number[] {
+  const day = mskDayStart(ms);
+  const schedule = getSchedule();
+  const result: number[] = [];
+  for (const shift of [-1, 0, 1]) for (const m of schedule) result.push(day + shift * DAY_MS + m * MINUTE_MS);
+  return result;
+}
+
+/** Ближайшая граница не позже ms. */
+export function boundaryAtOrBefore(ms: number): number {
+  let best = -Infinity;
+  for (const b of boundariesNear(ms)) if (b <= ms && b > best) best = b;
+  return best;
+}
+
+/** Ближайшая граница строго позже ms. */
+export function boundaryAfter(ms: number): number {
+  let best = Infinity;
+  for (const b of boundariesNear(ms)) if (b > ms && b < best) best = b;
+  return best;
+}
+
+function boundaryBefore(ms: number): number {
+  return boundaryAtOrBefore(ms - 1);
+}
+
+function keyFor(endMs: number): string {
   const d = new Date(endMs + MSK_OFFSET_MS);
-  return { key: `${mskDateKey(endMs)}-${pad(d.getUTCHours())}`, startMs: endMs - PERIOD_MS, endMs };
+  const hh = pad(d.getUTCHours());
+  const mm = d.getUTCMinutes();
+  return `${mskDateKey(endMs)}-${hh}${mm ? pad(mm) : ""}`;
+}
+
+export function periodEndingAt(endMs: number): Period {
+  return { key: keyFor(endMs), startMs: boundaryBefore(endMs), endMs };
 }
 
 /** Последний уже закончившийся период на момент nowMs. */
 export function lastCompletedPeriod(nowMs: number): Period {
-  const boundary = Math.floor((nowMs + MSK_OFFSET_MS) / PERIOD_MS) * PERIOD_MS - MSK_OFFSET_MS;
-  return periodEndingAt(boundary);
+  return periodEndingAt(boundaryAtOrBefore(nowMs));
 }
 
 /**
- * Режет окно [startMs, endMs) по границам 6-часовых периодов (00/06/12/18 МСК).
- * Пороги настроены на период 6 часов, поэтому длинное окно проверяется по частям.
+ * Режет окно [startMs, endMs) по границам расписания.
+ * Пороги настроены на один период, поэтому длинное окно проверяется по частям.
  * Для обычного периода возвращается он же.
  */
 export function splitIntoPeriods(startMs: number, endMs: number): Period[] {
   const result: Period[] = [];
   let from = startMs;
   while (from < endMs) {
-    const boundary = Math.floor((from + MSK_OFFSET_MS) / PERIOD_MS) * PERIOD_MS - MSK_OFFSET_MS + PERIOD_MS;
+    const boundary = boundaryAfter(from);
     const to = Math.min(boundary, endMs);
-    result.push({ key: periodEndingAt(boundary).key, startMs: from, endMs: to });
+    result.push({ key: keyFor(boundary), startMs: from, endMs: to });
     from = to;
   }
   return result;
+}
+
+/** «00:00, 06:00, 12:00, 18:00» */
+export function formatSchedule(minutes: number[]): string {
+  return minutes.map((m) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`).join(", ");
 }
 
 /** «12.11.2026 12:00–18:00 МСК» */

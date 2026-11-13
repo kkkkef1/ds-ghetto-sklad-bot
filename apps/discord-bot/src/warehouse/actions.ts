@@ -30,16 +30,49 @@ export interface WarehouseAction {
   cooldownMin: number;
   /** Содержимое набора (для отчёта), например «Броня Bloods (М) x1». */
   kitContent: string;
+  /** Разобранное содержимое набора: «Броня Bloods (М) x1» → { item: «Броня Bloods (М)», quantity: 1 }. */
+  kitItems: KitItem[];
   rowId: number;
+}
+
+export interface KitItem {
+  item: string;
+  rawItem: string;
+  quantity: number;
 }
 
 const QTY_X = "[xXхХ×*]";
 const MOVE_RE = new RegExp(
-  `^(Берет|Кладет)\\s+(.+?)(?:\\s+${QTY_X}\\s*(\\d+))?\\s+(со склада|на склад|из\\s+(\\S+)|в\\s+(\\S+))\\s*$`,
+  `^(Бер[её]т|Клад[её]т)\\s+(.+?)(?:\\s+${QTY_X}\\s*(\\d+))?\\s+(со склада|на склад|из\\s+(\\S+)|в\\s+(\\S+))\\s*$`,
   "iu"
 );
-const KIT_RE = /^Берет набор\s+(.+?)\s*[|│]\s*(\d+)\s*min\s*:\s*(.*)$/iu;
-const KIT_NOBAR_RE = /^Берет набор\s+(.+)$/iu;
+const KIT_RE = /^Бер[её]т набор\s+(.+?)\s*[|│]\s*(\d+)\s*min\s*:\s*(.*)$/iu;
+const KIT_NOBAR_RE = /^Бер[её]т набор\s+(.+)$/iu;
+
+/**
+ * Строки «Берет/Кладет …», которые не про склад вообще: задания (угон машины и т.п.).
+ * Не учитываются и не попадают в «не распознано».
+ */
+const NOT_WAREHOUSE_RE = /^(Бер[её]т|Клад[её]т)\s+задани/iu;
+export const isNotWarehouseRow = (text: string): boolean => NOT_WAREHOUSE_RE.test(text.replace(/\s+/g, " ").trim());
+
+/**
+ * «Броня Bloods (М) x1» → 1 шт.; «Аптечка EMS x2, Бинт x3» → две позиции.
+ * Если количество не указано — 1.
+ */
+export function parseKitContent(content: string): KitItem[] {
+  const result: KitItem[] = [];
+  for (const part of content.split(/\s*[,;]\s*/)) {
+    const raw = part.trim();
+    if (!raw) continue;
+    const m = raw.match(new RegExp(`^(.*?)\\s*${QTY_X}\\s*(\\d+)\\s*$`, "u"));
+    const name = (m ? m[1] : raw).trim();
+    if (!name) continue;
+    const qty = m ? Number(m[2]) : 1;
+    result.push({ item: cleanItemName(name), rawItem: name, quantity: Number.isFinite(qty) && qty > 0 ? qty : 1 });
+  }
+  return result;
+}
 
 /** «12.11.2026, 16:42:33» (МСК) → UTC ms. NaN, если формат не тот. */
 export function parseSiteTime(text: string): number {
@@ -62,9 +95,10 @@ export function parseAction(row: LogRow): WarehouseAction | null {
   const time = parseSiteTime(row.time);
   if (!Number.isFinite(time) || !row.characterId) return null;
   const text = row.text.replace(/\s+/g, " ").trim();
+  if (NOT_WAREHOUSE_RE.test(text)) return null;
   const base = { time, characterId: row.characterId, characterName: row.characterName, rowId: row.id };
 
-  if (/^Берет набор/i.test(text)) {
+  if (/^Бер[её]т набор/i.test(text)) {
     const m = text.match(KIT_RE);
     if (m) {
       return {
@@ -76,11 +110,12 @@ export function parseAction(row: LogRow): WarehouseAction | null {
         place: null,
         cooldownMin: Number(m[2]) || 0,
         kitContent: m[3].trim(),
+        kitItems: parseKitContent(m[3]),
       };
     }
     const loose = text.match(KIT_NOBAR_RE);
     if (!loose) return null;
-    return { ...base, kind: "kit", item: loose[1].trim(), rawItem: loose[1].trim(), quantity: 1, place: null, cooldownMin: 0, kitContent: "" };
+    return { ...base, kind: "kit", item: loose[1].trim(), rawItem: loose[1].trim(), quantity: 1, place: null, cooldownMin: 0, kitContent: "", kitItems: [] };
   }
 
   const m = text.match(MOVE_RE);
@@ -90,13 +125,14 @@ export function parseAction(row: LogRow): WarehouseAction | null {
   const place = m[5] ?? m[6] ?? "склад";
   return {
     ...base,
-    kind: m[1].toLowerCase() === "берет" ? "take" : "put",
+    kind: m[1].toLowerCase().startsWith("бер") ? "take" : "put",
     item: cleanItemName(rawItem),
     rawItem,
     quantity: Number.isFinite(qty) && qty > 0 ? qty : 1,
     place,
     cooldownMin: 0,
     kitContent: "",
+    kitItems: [],
   };
 }
 
