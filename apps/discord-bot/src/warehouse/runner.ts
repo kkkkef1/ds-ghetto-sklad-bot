@@ -10,6 +10,7 @@ import { loadSiteConfig } from "./config.js";
 import { fetchWindowRows } from "./fetchWindow.js";
 import type { OperatorIO } from "./io.js";
 import { CaptchaRequiredError, LogsPageError } from "./logsPage.js";
+import { formatDateTime } from "../activity/time.js";
 import { describePeriod, splitIntoPeriods, type Period } from "./periods.js";
 import { askAboutNewItems } from "./newItems.js";
 import { formatFactionReport } from "./report.js";
@@ -37,6 +38,8 @@ export interface RunResult {
   messages: string[];
   /** false, если хотя бы одну фракцию не удалось прочитать. */
   ok: boolean;
+  /** Служебные предупреждения (неполные данные и т. п.): только владельцу в личку, в канал отчётов не идут. */
+  notices: string[];
 }
 
 let running = false;
@@ -49,6 +52,7 @@ export async function runCheck(period: Period, io: OperatorIO, opts: { onlyFacti
   const settings = getSettings();
   const outcomes: FactionOutcome[] = [];
   const messages: string[] = [];
+  const notices: string[] = [];
   let session: SiteSession | null = null;
   const unknownItems = new Map<string, UnknownItem>();
 
@@ -75,6 +79,12 @@ export async function runCheck(period: Period, io: OperatorIO, opts: { onlyFacti
         outcome.rowsRead = fetched.rows.length;
         outcome.pages = fetched.pages;
         outcome.incomplete = !fetched.complete;
+        if (fetched.rows.length === 0) {
+          // Ни одной строки за несколько часов у фракции — почти наверняка проблема чтения, а не «тишина»: сообщаем и не считаем проверку успешной.
+          const seen = fetched.newestMs !== null && fetched.oldestMs !== null ? `, самая новая строка ${formatDateTime(fetched.newestMs)}, самая старая ${formatDateTime(fetched.oldestMs)}` : "";
+          outcome.error = `за период не прочитано ни одной строки (сайт показал всего ${fetched.total}${seen}; вариант фильтра дат ${fetched.attempt + 1})`;
+          continue;
+        }
 
         const actions: WarehouseAction[] = [];
         for (const row of fetched.rows) {
@@ -109,10 +119,11 @@ export async function runCheck(period: Period, io: OperatorIO, opts: { onlyFacti
           });
           outcome.suspects.push(...suspects);
           // Неполные данные — это нехватка самого раннего куска окна, поэтому предупреждение у первой части.
-          const incomplete = outcome.incomplete && i === 0;
-          if (suspects.length || incomplete) {
-            messages.push(...formatFactionReport(faction.name, chunk, suspects, { incomplete }));
+          if (outcome.incomplete && i === 0) {
+            notices.push(`${faction.name}: логи за период прочитаны не полностью (слишком много страниц) — список подозрительных может быть неполным.`);
           }
+          // В канал уходят только отчёты о подозрительных; ошибки и предупреждения — владельцу в личку.
+          if (suspects.length) messages.push(...formatFactionReport(faction.name, chunk, suspects));
         });
       } catch (err) {
         if (err instanceof LoginError) throw err; // вход не удался — смысла продолжать нет
@@ -134,7 +145,7 @@ export async function runCheck(period: Period, io: OperatorIO, opts: { onlyFacti
     }
   }
 
-  return { period, outcomes, messages, ok: outcomes.every((o) => !o.error) };
+  return { period, outcomes, messages, notices, ok: outcomes.every((o) => !o.error) };
 }
 
 function describeError(err: unknown): string {

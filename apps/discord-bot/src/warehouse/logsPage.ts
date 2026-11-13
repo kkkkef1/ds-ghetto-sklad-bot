@@ -128,14 +128,26 @@ export async function searchFactionLogs(page: Page, params: SearchParams): Promi
   const before = await page.evaluate<{ html: string; captcha: boolean }>(SNAPSHOT_SCRIPT);
   await page.locator("button", { hasText: /^\s*Поиск\s*$/ }).first().click();
 
-  // Ждём, пока таблица обновится (или всплывёт капча). Если результат не изменился
-  // (тот же поиск повторён) — через таймаут читаем то, что есть.
+  // Ждём, пока таблица обновится (или всплывёт капча), и затем — пока она перестанет меняться:
+  // сразу после клика сайт может показать промежуточное состояние (загрузку), и чтение в этот момент
+  // дало бы «0 строк». Если результат вообще не изменился (тот же поиск повторён) — через таймаут читаем то, что есть.
   const deadline = Date.now() + 30_000;
+  let changed = false;
+  let last = before.html;
+  let lastChangeAt = Date.now();
   while (Date.now() < deadline) {
     await page.waitForTimeout(500);
     const now = await page.evaluate<{ html: string; captcha: boolean }>(SNAPSHOT_SCRIPT);
     if (now.captcha) throw new CaptchaRequiredError();
-    if (now.html !== before.html) break;
+    if (now.html !== before.html) changed = true;
+    if (now.html !== last) {
+      last = now.html;
+      lastChangeAt = Date.now();
+    }
+    if (!changed) continue;
+    const stableMs = Date.now() - lastChangeAt;
+    const hasRows = now.html.includes("<td");
+    if ((hasRows && stableMs >= 2_000) || stableMs >= 6_000) break;
   }
 
   const raw = await page.evaluate<RawPage>(READ_SCRIPT);

@@ -109,3 +109,10 @@ export function siteDateBefore(startMs: number): string {
   const [y, m, d] = prev.split("-");
   return `${d}/${m}/${y}`;
 }
+
+/** Дата «дд/мм/гггг» для фильтра сайта «до»: день после конца окна (запас на случай, если «до» не включает сам день). */
+export function siteDateAfter(endMs: number): string {
+  const next = mskDateKey(endMs + 24 * 60 * MINUTE_MS);
+  const [y, m, d] = next.split("-");
+  return `${d}/${m}/${y}`;
+}

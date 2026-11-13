@@ -70,13 +70,9 @@ export function formatFactionReport(
   factionName: string,
   period: Period,
   suspects: Suspect[],
-  opts: { incomplete?: boolean } = {}
 ): string[] {
   const header = `**${factionName}** — подозрительные действия со складом за ${describePeriod(period)}`;
   const blocks = suspects.map(formatSuspect);
-  if (opts.incomplete) {
-    blocks.push("**Внимание:** логи за период прочитаны не полностью (слишком много страниц) — список может быть неполным.");
-  }
   const messages = chunk(header, blocks);
   const last = messages.length - 1;
   if (messages[last].length + 1 + FACTION_SEPARATOR.length > MAX_MESSAGE) messages.push(FACTION_SEPARATOR);

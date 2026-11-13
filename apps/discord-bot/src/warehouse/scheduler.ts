@@ -45,7 +45,12 @@ export async function runPeriod(client: Client, period: Period): Promise<void> {
   }
   const io = new ClientIO(client, owner);
   try {
+    console.log(`[warehouse] Запускаю проверку периода ${period.key} (${new Date(period.startMs).toISOString()} – ${new Date(period.endMs).toISOString()}).`);
     const result = await runCheck(period, io);
+    console.log(`[warehouse] Период ${period.key} прочитан: ${summarize(result).replace(/\n/g, " | ")}`);
+    // Все фракции дали ошибку (например, сайт ничего не вернул): не закрываем период, чтобы tick повторил попытку.
+    if (result.outcomes.length > 0 && result.outcomes.every((o) => o.error)) throw new Error(summarize(result));
+    if (result.notices.length) await io.notify(`Проверка склада, период ${period.key}:\n${result.notices.join("\n")}`);
     let delivered = true;
     if (result.messages.length) {
       delivered = await postToChannel(client, result.messages);
