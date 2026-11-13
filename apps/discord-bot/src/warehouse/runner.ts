@@ -5,12 +5,13 @@
 // сообщение не отправляется.
 
 import { isNotWarehouseRow, parseAction, type WarehouseAction } from "./actions.js";
-import { analyzeActions, DEFAULT_ANALYZE_OPTIONS, type Suspect } from "./analyze.js";
+import { analyzeActions, DEFAULT_ANALYZE_OPTIONS, findUnknownItems, type Suspect, type UnknownItem } from "./analyze.js";
 import { loadSiteConfig } from "./config.js";
 import { fetchWindowRows } from "./fetchWindow.js";
 import type { OperatorIO } from "./io.js";
 import { CaptchaRequiredError, LogsPageError } from "./logsPage.js";
 import { describePeriod, splitIntoPeriods, type Period } from "./periods.js";
+import { askAboutNewItems } from "./newItems.js";
 import { formatFactionReport } from "./report.js";
 import { LoginError, SiteSession } from "./siteSession.js";
 import { getExcludedIds, getSettings } from "./store.js";
@@ -49,6 +50,7 @@ export async function runCheck(period: Period, io: OperatorIO, opts: { onlyFacti
   const outcomes: FactionOutcome[] = [];
   const messages: string[] = [];
   let session: SiteSession | null = null;
+  const unknownItems = new Map<string, UnknownItem>();
 
   try {
     if (!settings.factions.length) throw new Error("Не выбрано ни одной фракции (/sklad faction add).");
@@ -84,6 +86,14 @@ export async function runCheck(period: Period, io: OperatorIO, opts: { onlyFacti
           }
         }
         outcome.actions = actions.length;
+        for (const item of findUnknownItems(actions, settings.rules)) {
+          const key = item.name.toLowerCase();
+          const known = unknownItems.get(key);
+          if (known) {
+            known.quantity += item.quantity;
+            item.places.forEach((p) => known.places.add(p));
+          } else unknownItems.set(key, item);
+        }
         // Пороги заданы на 6 часов, поэтому длинное окно (ручная проверка, /sklad force)
         // анализируется по частям, по границам периодов. Для обычного периода часть одна.
         const chunks = splitIntoPeriods(period.startMs, period.endMs);
@@ -115,6 +125,15 @@ export async function runCheck(period: Period, io: OperatorIO, opts: { onlyFacti
     running = false;
   }
 
+  // Новые предметы: спрашиваем лимит у владельца в личке (по сообщению на предмет).
+  if (unknownItems.size) {
+    try {
+      await askAboutNewItems(io, [...unknownItems.values()]);
+    } catch (err) {
+      console.error("[warehouse] Не удалось спросить лимит для новых предметов:", err);
+    }
+  }
+
   return { period, outcomes, messages, ok: outcomes.every((o) => !o.error) };
 }
 
@@ -127,11 +146,11 @@ function describeError(err: unknown): string {
 export function summarize(result: RunResult): string {
   const lines = [`Период ${describePeriod(result.period)}:`];
   for (const o of result.outcomes) {
-    if (o.error) lines.push(`• ${o.factionName}: ❌ ${o.error}`);
+    if (o.error) lines.push(`• ${o.factionName}: ${o.error}`);
     else
       lines.push(
-        `• ${o.factionName}: строк ${o.rowsRead} (страниц ${o.pages}), действий со складом ${o.actions}, подозрительных ${o.suspects.length}${o.incomplete ? " ⚠ данные неполные" : ""}` +
-          (o.unparsed ? `\n   ⚠ не распознано строк «Берет/Кладет»: ${o.unparsed}, например: ${o.unparsedSamples.map((t) => `«${t}»`).join("; ")}` : "")
+        `• ${o.factionName}: строк ${o.rowsRead} (страниц ${o.pages}), действий со складом ${o.actions}, подозрительных ${o.suspects.length}${o.incomplete ? " данные неполные" : ""}` +
+          (o.unparsed ? `\n   не распознано строк «Берет/Кладет»: ${o.unparsed}, например: ${o.unparsedSamples.map((t) => `«${t}»`).join("; ")}` : "")
       );
   }
   return lines.join("\n");

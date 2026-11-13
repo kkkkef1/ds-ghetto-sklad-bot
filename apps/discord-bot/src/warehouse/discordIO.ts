@@ -36,6 +36,17 @@ export class ClientIO implements OperatorIO {
     }
   }
 
+  async ask(text: string): Promise<string | null> {
+    try {
+      const owner = await this.client.users.fetch(this.ownerId);
+      const sent = await owner.send({ content: text.slice(0, MAX_TEXT), allowedMentions: { parse: [] } });
+      return sent.id;
+    } catch (err) {
+      console.error("[warehouse] Не удалось отправить вопрос владельцу:", err);
+      return null;
+    }
+  }
+
   async askCode(prompt: string, timeoutMs: number): Promise<string | null> {
     const owner = await this.client.users.fetch(this.ownerId);
     const dm = await owner.createDM();

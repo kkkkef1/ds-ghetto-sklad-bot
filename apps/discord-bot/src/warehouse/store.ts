@@ -51,6 +51,12 @@ export const KNOWN_FACTIONS: KnownFaction[] = [
   { code: "F_YAKUZA", name: "Японская Мафия" },
 ];
 
+export interface PendingItem {
+  /** Название как в логе («SPANK»). */
+  name: string;
+  askedAt: number;
+}
+
 export interface Exclusion {
   characterId: string;
   note: string;
@@ -78,13 +84,15 @@ interface StoreData {
   scheduleMinutes: number[];
   /** Версия набора правил: нужна, чтобы один раз обновить старые сохранённые правила. */
   rulesVersion: number;
+  /** Новые предметы, по которым бот спросил лимит в личке: id сообщения-вопроса → предмет. */
+  pendingItems: Record<string, PendingItem>;
   /** Ключ периода («2026-11-12-12» = период, закончившийся 12.11 в 12:00 МСК) → когда обработан. */
   lastRuns: Record<string, number>;
   /** Когда бот последний раз успешно закончил проверку (для /sklad status). */
   lastRunSummary: { at: number; period: string; ok: boolean; text: string } | null;
 }
 
-export const RULES_VERSION = 2;
+export const RULES_VERSION = 3;
 export const DEFAULT_SCHEDULE_MINUTES = [0, 360, 720, 1080];
 
 /** Патроны разных калибров считаются отдельно: у каждого свой лимит. */
@@ -92,6 +100,7 @@ function ammoRules(): Rule[] {
   return [
     { id: "ammo762", label: "Патроны 7.62", kind: "item", match: ["7.62"], limit: 420, burstCount: 0, burstMinutes: 0 },
     { id: "ammo556", label: "Патроны 5.56", kind: "item", match: ["5.56"], limit: 420, burstCount: 0, burstMinutes: 0 },
+    { id: "ammo1143", label: "Патроны 11.43", kind: "item", match: ["11.43"], limit: 200, burstCount: 0, burstMinutes: 0 },
     { id: "ammo9", label: "Патроны 9mm", kind: "item", match: ["9mm", "9 mm", "9мм"], limit: 400, burstCount: 0, burstMinutes: 0 },
     { id: "ammo12", label: "Патроны 12mm", kind: "item", match: ["12mm", "12 mm", "12мм"], limit: 100, burstCount: 0, burstMinutes: 0 },
     { id: "ammo45", label: "Патроны .45", kind: "item", match: [".45"], limit: 300, burstCount: 0, burstMinutes: 0 },
@@ -107,28 +116,34 @@ export function defaultRules(): Rule[] {
     { id: "ammo", label: "Патроны (прочие)", kind: "item", match: ["патрон", "ammo", "mm"], limit: 400, burstCount: 0, burstMinutes: 0 },
     { id: "armor", label: "Броня", kind: "item", match: ["брон"], limit: 10, burstCount: 5, burstMinutes: 3 },
     { id: "medkit", label: "Аптечки и бинты", kind: "item", match: ["аптеч", "бинт"], limit: 30, burstCount: 0, burstMinutes: 0 },
+    { id: "spank", label: "SPANK", kind: "item", match: ["spank"], limit: 100, burstCount: 0, burstMinutes: 0 },
+    { id: "analgesic", label: "Анальгетик", kind: "item", match: ["анальгетик"], limit: 60, burstCount: 0, burstMinutes: 0 },
+    { id: "ration", label: "Паек", kind: "item", match: ["паек"], limit: 50, burstCount: 0, burstMinutes: 0 },
     { id: "other", label: "Прочее", kind: "item", match: ["*"], limit: 100, burstCount: 0, burstMinutes: 0 },
     { id: "kit", label: "Наборы", kind: "kit", match: ["*"], limit: 14, burstCount: 0, burstMinutes: 0 },
   ];
 }
 
 /**
- * Старые сохранённые правила (до версии 2) знали один общий лимит на все патроны, причём «7.62mm»
- * без слова «патрон» вообще попадало в «Прочее». Вставляем правила по калибрам перед общим «ammo»;
- * лимит самого «ammo» (если его меняли) сохраняется.
+ * Обновление старых сохранённых правил: добавляет правила по умолчанию, которых там ещё нет
+ * (патроны по калибрам, SPANK, анальгетик, паёк). Уже существующие правила и их лимиты не трогаются.
+ * Патроны по калибрам встают перед общим «ammo», остальные — перед универсальным «Прочее».
  */
 function migrateRules(rules: Rule[]): Rule[] {
   const result = rules.map((r) => ({ ...r }));
   const ammo = result.find((r) => r.id === "ammo");
-  if (ammo) {
+  if (ammo && ammo.label === "Патроны") {
     ammo.label = "Патроны (прочие)";
     if (!ammo.match.includes("mm")) ammo.match = [...ammo.match, "mm"];
   }
-  const add = ammoRules().filter((n) => !result.some((r) => r.id === n.id));
-  let idx = result.findIndex((r) => r.id === "ammo");
-  if (idx === -1) idx = result.findIndex((r) => r.kind === "item" && r.match.includes("*"));
-  if (idx === -1) idx = result.length;
-  result.splice(idx, 0, ...add);
+  for (const rule of defaultRules()) {
+    if (result.some((r) => r.id === rule.id)) continue;
+    const isCaliber = rule.id.startsWith("ammo") && rule.id !== "ammo";
+    let idx = isCaliber ? result.findIndex((r) => r.id === "ammo") : -1;
+    if (idx === -1) idx = result.findIndex((r) => r.kind === rule.kind && r.match.includes("*"));
+    if (idx === -1) idx = result.length;
+    result.splice(idx, 0, { ...rule });
+  }
   return result;
 }
 
@@ -154,6 +169,7 @@ function emptyStore(): StoreData {
     exclusions: [],
     scheduleMinutes: [...DEFAULT_SCHEDULE_MINUTES],
     rulesVersion: RULES_VERSION,
+    pendingItems: {},
     lastRuns: {},
     lastRunSummary: null,
   };
@@ -186,6 +202,7 @@ function load(): StoreData {
               : raw.rules
             : base.rules,
         rulesVersion: RULES_VERSION,
+        pendingItems: raw.pendingItems && typeof raw.pendingItems === "object" ? raw.pendingItems : base.pendingItems,
         scheduleMinutes: normalizeSchedule(raw.scheduleMinutes) ?? base.scheduleMinutes,
         netReturns: typeof raw.netReturns === "boolean" ? raw.netReturns : base.netReturns,
         kitCooldownCheck: typeof raw.kitCooldownCheck === "boolean" ? raw.kitCooldownCheck : base.kitCooldownCheck,
@@ -322,6 +339,36 @@ export function removeRule(id: string): boolean {
 export function resetRules(): void {
   data.rules = defaultRules();
   persist();
+}
+
+// ---- новые предметы: вопрос про лимит ----
+
+export const getPendingItems = (): Record<string, PendingItem> => data.pendingItems;
+
+export function isItemPending(name: string): boolean {
+  const key = name.trim().toLowerCase();
+  return Object.values(data.pendingItems).some((p) => p.name.trim().toLowerCase() === key);
+}
+
+export function addPendingItem(messageId: string, name: string): void {
+  data.pendingItems[messageId] = { name, askedAt: Date.now() };
+  persist();
+}
+
+export function removePendingItem(messageId: string): void {
+  delete data.pendingItems[messageId];
+  persist();
+}
+
+/** Правило для нового предмета: отдельная категория с названием предмета и заданным лимитом. */
+export function addItemRule(name: string, limit: number): Rule {
+  const label = name.trim().slice(0, 40);
+  const slug = label.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 20) || "item";
+  let id = `auto-${slug}`;
+  for (let n = 2; findRule(id); n++) id = `auto-${slug}-${n}`;
+  const rule: Rule = { id, label, kind: "item", match: [label.toLowerCase()], limit, burstCount: 0, burstMinutes: 0 };
+  addRule(rule);
+  return rule;
 }
 
 // ---- исключения ----

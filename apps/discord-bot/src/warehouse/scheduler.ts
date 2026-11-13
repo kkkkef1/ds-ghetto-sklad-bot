@@ -8,6 +8,7 @@
 
 import type { Client, TextBasedChannel } from "discord.js";
 import { ClientIO } from "./discordIO.js";
+import { listenForLimitReplies } from "./newItems.js";
 import { lastCompletedPeriod, type Period } from "./periods.js";
 import { isRunning, runCheck, summarize } from "./runner.js";
 import { getSettings, isPeriodDone, markCheckedUntil, markPeriodDone, setLastRunSummary } from "./store.js";
@@ -48,7 +49,7 @@ export async function runPeriod(client: Client, period: Period): Promise<void> {
     let delivered = true;
     if (result.messages.length) {
       delivered = await postToChannel(client, result.messages);
-      if (!delivered) await io.notify("⚠️ Результаты есть, но канал для отчётов не настроен или недоступен (/sklad channel).");
+      if (!delivered) await io.notify("Результаты есть, но канал для отчётов не настроен или недоступен (/sklad channel).");
     }
     // «Проверено до» двигаем, только если всё прочиталось и отчёт дошёл: иначе /sklad force доберёт это окно.
     if (result.ok && delivered) markCheckedUntil(period.endMs);
@@ -56,7 +57,7 @@ export async function runPeriod(client: Client, period: Period): Promise<void> {
     // Период считается обработанным, даже если часть фракций не прочиталась: повтор целиком
     // продублировал бы уже отправленные отчёты. Недостающее владелец добирает вручную (/sklad run).
     markPeriodDone(period.key);
-    if (!result.ok) await io.notify(`⚠️ Проверка склада прошла с ошибками. Недостающее можно повторить командой /sklad run.\n${summarize(result)}`);
+    if (!result.ok) await io.notify(`Проверка склада прошла с ошибками. Недостающее можно повторить командой /sklad run.\n${summarize(result)}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     setLastRunSummary({ at: Date.now(), period: period.key, ok: false, text: `Ошибка: ${message}` });
@@ -85,12 +86,13 @@ async function tick(client: Client): Promise<void> {
     console.error(`[warehouse] Проверка периода ${period.key} не удалась (попытка ${state.count}/${MAX_ATTEMPTS}):`, err);
     if (state.count >= MAX_ATTEMPTS) {
       const owner = ownerId();
-      if (owner) await new ClientIO(client, owner).notify(`❌ Проверка склада за период ${period.key} не удалась ${MAX_ATTEMPTS} раза подряд, больше пробовать не буду.`);
+      if (owner) await new ClientIO(client, owner).notify(`Проверка склада за период ${period.key} не удалась ${MAX_ATTEMPTS} раза подряд, больше пробовать не буду.`);
     }
   }
 }
 
 /** Подключает расписание к уже запущенному клиенту. Вызывать один раз. */
 export function initWarehouse(client: Client): void {
+  listenForLimitReplies(client, ownerId);
   setInterval(() => void tick(client).catch((e) => console.error("[warehouse] tick:", e)), TICK_MS).unref();
 }

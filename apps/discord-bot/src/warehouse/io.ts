@@ -13,6 +13,11 @@ export interface OperatorIO {
   notify(text: string, attachmentPath?: string): Promise<void>;
   /** Спросить одноразовый код (6 цифр). null — не дождались ответа. */
   askCode(prompt: string, timeoutMs: number): Promise<string | null>;
+  /**
+   * Отправить оператору вопрос и вернуть id отправленного сообщения (ответ придёт позже:
+   * оператор отвечает именно на это сообщение). null — отправить не удалось или канал не умеет.
+   */
+  ask?(text: string): Promise<string | null>;
   /** Освободить ресурсы (отключить Discord-клиент и т.п.). */
   close?(): Promise<void>;
 }

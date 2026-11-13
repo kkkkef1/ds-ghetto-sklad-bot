@@ -60,7 +60,7 @@ async function main(): Promise<void> {
       .map((r) => `• ${r.id} ${r.character}: ${r.text} (${r.time})`)
       .join("\n");
     await io.notify(
-      `✅ Прототип: вход выполнен, логи читаются.\nНайдено на сайте: ${result.total}, прочитано строк: ${result.rows.length}.\n${sample}`
+      `Прототип: вход выполнен, логи читаются.\nНайдено на сайте: ${result.total}, прочитано строк: ${result.rows.length}.\n${sample}`
     );
     console.log(`[warehouse] Готово: ${result.rows.length} строк, файл ${outFile}`);
   } catch (err) {
@@ -68,10 +68,10 @@ async function main(): Promise<void> {
       // fail() уже отправил владельцу сообщение со скриншотом.
       console.error(`[warehouse] Вход не удался: ${err.message}`);
     } else if (err instanceof CaptchaRequiredError) {
-      await io.notify(`❌ ${err.message} Автоматически я её не решаю — нужно подтвердить вручную.`);
+      await io.notify(`${err.message} Автоматически я её не решаю — нужно подтвердить вручную.`);
       console.error(`[warehouse] ${err.message}`);
     } else {
-      await io.notify(`❌ Прототип упал с ошибкой: ${err instanceof Error ? err.message : String(err)}`);
+      await io.notify(`Прототип упал с ошибкой: ${err instanceof Error ? err.message : String(err)}`);
       console.error("[warehouse] Ошибка:", err);
     }
     process.exitCode = 1;

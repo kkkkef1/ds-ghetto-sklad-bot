@@ -96,6 +96,8 @@ export function parseAction(row: LogRow): WarehouseAction | null {
   if (!Number.isFinite(time) || !row.characterId) return null;
   const text = row.text.replace(/\s+/g, " ").trim();
   if (NOT_WAREHOUSE_RE.test(text)) return null;
+  // Системные записи (например, «Получает припасы из выпавшего армейского груза») — не действия игроков.
+  if (row.characterName.trim().toUpperCase() === "SYSTEM") return null;
   const base = { time, characterId: row.characterId, characterName: row.characterName, rowId: row.id };
 
   if (/^Бер[её]т набор/i.test(text)) {

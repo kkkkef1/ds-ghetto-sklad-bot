@@ -502,7 +502,7 @@ async function handleForce(interaction: ChatInputCommandInteraction): Promise<vo
       if (!result.messages.length) await safeFollowUp(interaction, { content: "Подозрительных нет.", ephemeral: true });
     }
   } catch (err) {
-    await safeFollowUp(interaction, { content: `❌ Проверка не удалась: ${err instanceof Error ? err.message : String(err)}`.slice(0, 1990), ephemeral: true });
+    await safeFollowUp(interaction, { content: `Проверка не удалась: ${err instanceof Error ? err.message : String(err)}`.slice(0, 1990), ephemeral: true });
   }
 }
 
@@ -598,6 +598,6 @@ async function runManual(
       if (!result.messages.length) await safeFollowUp(interaction, { content: "Подозрительных нет.", ephemeral: true });
     }
   } catch (err) {
-    await safeFollowUp(interaction, { content: `❌ Проверка не удалась: ${err instanceof Error ? err.message : String(err)}`.slice(0, 1990), ephemeral: true });
+    await safeFollowUp(interaction, { content: `Проверка не удалась: ${err instanceof Error ? err.message : String(err)}`.slice(0, 1990), ephemeral: true });
   }
 }

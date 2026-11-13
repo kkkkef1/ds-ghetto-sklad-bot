@@ -40,7 +40,7 @@ export interface CategoryLine {
   label: string;
   total: number;
   /** От большего к меньшему. */
-  items: { name: string; quantity: number }[];
+  items: { name: string; quantity: number; /** «склад» или номер машины (BLOODS05); у наборов нет. */ place?: string }[];
   /** Только для наборов: сколько наборов взято ради этой категории. */
   kitCount?: number;
 }
@@ -120,8 +120,17 @@ function maxInWindow(events: TakeEvent[], windowMs: number): number {
   return best;
 }
 
+const KEY_SEP = "\u0000";
+/** Предмет + откуда взят: один и тот же предмет из склада и из машины — разные строки отчёта. */
+const itemKey = (item: string, place: string | null): string => `${item}${KEY_SEP}${place ?? ""}`;
+
 function toLine(rule: Rule, byItem: Map<string, number>, kitCount?: number): CategoryLine {
-  const items = [...byItem.entries()].map(([name, quantity]) => ({ name, quantity })).sort((a, b) => b.quantity - a.quantity);
+  const items = [...byItem.entries()]
+    .map(([key, quantity]) => {
+      const [name, place] = key.split(KEY_SEP);
+      return place ? { name, quantity, place } : { name, quantity };
+    })
+    .sort((a, b) => b.quantity - a.quantity);
   return { label: rule.label, total: items.reduce((sum, it) => sum + it.quantity, 0), items, ...(kitCount !== undefined ? { kitCount } : {}) };
 }
 
@@ -185,7 +194,7 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
         if (!rule) continue;
         const bucket = bucketOf(ensurePerson(), rule);
         bucket.kitTaken += ki.quantity;
-        inc(bucket.kitByItem, ki.item, ki.quantity);
+        inc(bucket.kitByItem, itemKey(ki.item, null), ki.quantity);
         // Строки одного набора подряд (до kitMergeSeconds) — одна выдача.
         const times = bucket.kitTimes.get(a.item) ?? [];
         const last = times[times.length - 1];
@@ -201,10 +210,10 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
     if (a.kind === "take") {
       bucket.taken += a.quantity;
       bucket.events.push({ t: a.time, q: a.quantity });
-      inc(bucket.byItem, a.item, a.quantity);
+      inc(bucket.byItem, itemKey(a.item, a.place), a.quantity);
     } else {
       bucket.put += a.quantity;
-      inc(bucket.putByItem, a.item, a.quantity);
+      inc(bucket.putByItem, itemKey(a.item, a.place), a.quantity);
     }
   }
 
@@ -224,16 +233,17 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
         const parts: string[] = [];
         if (bucket.taken > 0) {
           const returned = opts.netReturns && bucket.put > 0 ? `, вернул ${Math.min(bucket.put, bucket.taken)}` : "";
-          parts.push(`со склада ${bucket.taken}${returned}`);
+          parts.push(`взял ${bucket.taken}${returned}`);
         }
         if (bucket.kitTaken > 0) parts.push(`набрал из наборов ${bucket.kitTaken}, взял наборов: ${kitsCount}`);
-        reasons.push(`${rule.label}: ${parts.join("; ")} → итого ${total} (лимит ${rule.limit})`);
+        const showTotal = parts.length > 1 || (opts.netReturns && bucket.put > 0);
+        reasons.push(`${rule.label}: ${parts.join("; ")}${showTotal ? ` → итого ${total}` : ""} (лимит ${rule.limit})`);
         score += total / rule.limit;
       }
       if (rule.burstCount > 0 && rule.burstMinutes > 0) {
         const burst = maxInWindow(bucket.events, rule.burstMinutes * 60_000);
         if (burst >= rule.burstCount) {
-          reasons.push(`${rule.label}: ${burst} шт. со склада за ${rule.burstMinutes} мин (порог ${rule.burstCount})`);
+          reasons.push(`${rule.label}: ${burst} шт. за ${rule.burstMinutes} мин (порог ${rule.burstCount})`);
           score += burst / rule.burstCount;
         }
       }
@@ -283,4 +293,37 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
   }
 
   return suspects.sort((a, b) => b.score - a.score);
+}
+
+// ===================== НОВЫЕ ПРЕДМЕТЫ =====================
+
+export interface UnknownItem {
+  /** Название как в логе («SPANK»). */
+  name: string;
+  quantity: number;
+  /** Откуда брали: «склад», номера машин, «набор». */
+  places: Set<string>;
+}
+
+/**
+ * Предметы, для которых нет отдельного правила и которые попали в универсальное «Прочее».
+ * Бот спрашивает про них лимит у владельца.
+ */
+export function findUnknownItems(actions: WarehouseAction[], rules: Rule[]): UnknownItem[] {
+  const found = new Map<string, UnknownItem>();
+  const note = (item: string, rawItem: string, quantity: number, place: string, probe: WarehouseAction) => {
+    const rule = pickRule(rules, { ...probe, kind: "take", item, rawItem, quantity, kitItems: [] });
+    if (!rule || rule.kind !== "item" || !rule.match.includes("*")) return;
+    const key = item.trim().toLowerCase();
+    if (!key) return;
+    const entry = found.get(key) ?? { name: item.trim(), quantity: 0, places: new Set<string>() };
+    entry.quantity += quantity;
+    entry.places.add(place);
+    found.set(key, entry);
+  };
+  for (const a of actions) {
+    if (a.kind === "kit") for (const ki of a.kitItems) note(ki.item, ki.rawItem, ki.quantity, "набор", a);
+    else note(a.item, a.rawItem, a.quantity, a.place ?? "склад", a);
+  }
+  return [...found.values()].sort((x, y) => y.quantity - x.quantity);
 }

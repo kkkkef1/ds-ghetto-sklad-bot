@@ -223,7 +223,7 @@ export class SiteSession {
     const page = this.page;
     for (let i = 0; i < 3; i++) {
       const code = await this.io.askCode(
-        "🔐 Нужен код из Google Authenticator для входа на gta5rp.com. Пришлите 6 цифр в ответ (жду 5 минут).",
+        "Нужен код из Google Authenticator для входа на gta5rp.com. Пришлите 6 цифр в ответ (жду 5 минут).",
         this.cfg.codeTimeoutMs
       );
       if (!code) throw await this.fail("Не дождался кода 2FA.");
@@ -253,7 +253,7 @@ export class SiteSession {
 
     await page.locator("button", { hasText: /Запросить/ }).first().click();
     await this.io.notify(
-      `🌐 Подсеть ${subnet} (IP ${ip}) не в белом списке админки. Запрос отправлен — попросите главного админа подтвердить. ` +
+      `Подсеть ${subnet} (IP ${ip}) не в белом списке админки. Запрос отправлен — попросите главного админа подтвердить. ` +
         `Жду до ${Math.round(this.cfg.subnetWaitMs / 60_000)} мин.`
     );
     // Сама страница опрашивает сервер и уходит, когда подсеть одобрена.
@@ -345,7 +345,7 @@ export class SiteSession {
     } catch {
       shot = undefined;
     }
-    await this.io.notify(`❌ Вход на сайт не удался: ${message}\nСтраница: ${this.page.url()}`, shot);
+    await this.io.notify(`Вход на сайт не удался: ${message}\nСтраница: ${this.page.url()}`, shot);
     return new LoginError(message, shot);
   }
 }
