@@ -7,6 +7,7 @@ import * as announce from "./commands/announce.js";
 import * as mp from "./commands/mp.js";
 import * as meeting from "./commands/meeting.js";
 import * as sklad from "./commands/sklad.js";
+import * as twink from "./commands/twink.js";
 
 const commands = [
   startSession.data.toJSON(),
@@ -16,6 +17,7 @@ const commands = [
   mp.data.toJSON(),
   meeting.data.toJSON(),
   sklad.data.toJSON(),
+  twink.data.toJSON(),
 ];
 
 /**

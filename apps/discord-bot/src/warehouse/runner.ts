@@ -15,6 +15,7 @@ import { describePeriod, splitIntoPeriods, type Period } from "./periods.js";
 import { askAboutNewItems } from "./newItems.js";
 import { formatFactionReport } from "./report.js";
 import { LoginError, SiteSession } from "./siteSession.js";
+import { withSiteLock } from "./siteLock.js";
 import { getExcludedIds, getSettings } from "./store.js";
 
 export interface FactionOutcome {
@@ -48,10 +49,22 @@ export const BUILD_ID = "2026-11-13.r7";
 let running = false;
 export const isRunning = (): boolean => running;
 
-/** Читает и анализирует, но ничего не отправляет — отправкой занимается вызывающий. */
+/**
+ * Читает и анализирует, но ничего не отправляет — отправкой занимается вызывающий.
+ * Если в этот момент на сайте работает проверка твинков, ждёт своей очереди (флаг running
+ * при этом уже стоит, так что расписание не запустит вторую такую же проверку).
+ */
 export async function runCheck(period: Period, io: OperatorIO, opts: { onlyFactions?: string[] } = {}): Promise<RunResult> {
   if (running) throw new Error("Проверка уже выполняется — дождитесь её окончания.");
   running = true;
+  try {
+    return await withSiteLock("склад", () => runCheckLocked(period, io, opts));
+  } finally {
+    running = false;
+  }
+}
+
+async function runCheckLocked(period: Period, io: OperatorIO, opts: { onlyFactions?: string[] }): Promise<RunResult> {
   const settings = getSettings();
   const outcomes: FactionOutcome[] = [];
   const messages: string[] = [];
@@ -136,7 +149,6 @@ export async function runCheck(period: Period, io: OperatorIO, opts: { onlyFacti
     }
   } finally {
     await session?.close();
-    running = false;
   }
 
   // Новые предметы: спрашиваем лимит у владельца в личке (по сообщению на предмет).

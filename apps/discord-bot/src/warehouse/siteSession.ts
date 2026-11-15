@@ -137,6 +137,51 @@ export class SiteSession {
     throw await this.fail("Слишком много шагов входа подряд.");
   }
 
+  /**
+   * Доходит до страницы списка участников фракции (mi?act=faction_members…).
+   * Вход идёт проверенным путём через страницу логов (все окна входа те же), затем открывается нужный адрес.
+   */
+  async ensureMembersPage(url: string, readySelector: string): Promise<Page> {
+    await this.ensureLogsPage();
+    await this.goto(url);
+    const deadline = Date.now() + 25_000;
+    while (Date.now() < deadline) {
+      if (await this.page.locator(readySelector).count().catch(() => 0)) return this.page;
+      await this.page.waitForTimeout(500);
+    }
+    const state = await this.detect();
+    if (state !== "logs" && state !== "unknown") {
+      // Сессия сбросилась по дороге: проходим вход ещё раз и пробуем открыть страницу снова.
+      await this.ensureLogsPage();
+      await this.goto(url);
+      if (await this.page.locator(readySelector).count().catch(() => 0)) return this.page;
+    }
+    throw await this.fail("Список участников фракции не открылся (нет кнопок «(ч)»): сессия сброшена или ссылка устарела.");
+  }
+
+  /** Почему страницу сейчас нельзя читать: капча, проверка Cloudflare, вышли из аккаунта. null — всё в порядке. */
+  async blockReason(): Promise<string | null> {
+    const page = this.page;
+    try {
+      const url = page.url();
+      if (url.includes("act=subnet_blocked")) return "подсеть не в белом списке админки";
+      if (url.includes("act=security_check")) return "сайт просит «Проверку безопасности»";
+      const captcha = await page.evaluate<boolean>(`(() => {
+        var m = document.querySelector('#recaptcha_modal');
+        return !!m && (m.classList.contains('show') || getComputedStyle(m).display !== 'none');
+      })()`);
+      if (captcha) return "сайт показал «Проверка на робота» (капча)";
+      if (await this.isChallenge()) return "проверка Cloudflare";
+      if (await page.locator('input[name="2fa_code"]').count()) return "сайт просит код Google Authenticator (сессия сброшена)";
+      if ((await page.locator('input[name="login"]').count()) && (await page.locator('input[name="password"]').count())) {
+        return "сессия сброшена — открылась форма входа";
+      }
+    } catch {
+      // Страница в момент перехода: считаем, что блока нет, решит следующий шаг.
+    }
+    return null;
+  }
+
   // ---------- определение страницы ----------
 
   private async detect(): Promise<State> {

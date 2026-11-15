@@ -14,6 +14,8 @@ import * as announce from "./commands/announce.js";
 import * as mp from "./commands/mp.js";
 import * as meeting from "./commands/meeting.js";
 import * as sklad from "./commands/sklad.js";
+import * as twink from "./commands/twink.js";
+import { initTwink } from "./twink/scheduler.js";
 import { initWarehouse } from "./warehouse/scheduler.js";
 import { CONFIRM_PREFIX, MARK_PREFIX } from "./activity/render.js";
 import { handleConfirmButton, handleMarkButton, initActivity } from "./activity/service.js";
@@ -32,6 +34,7 @@ const commands = new Map<string, Command>([
   [mp.data.name, mp],
   [meeting.data.name, meeting],
   [sklad.data.name, sklad],
+  [twink.data.name, twink],
 ]);
 
 const client = new Client({
@@ -142,6 +145,8 @@ initCaptTracker(client);
 initActivity(client);
 // Автопроверка склада фракций: 4 раза в сутки читает логи gta5rp.com и шлёт подозрительных в канал.
 initWarehouse(client);
+// Проверка твинков: по средам и воскресеньям готовит результат к 09:00 МСК, использует тот же аккаунт и очередь, что и склад.
+initTwink(client);
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
