@@ -2,7 +2,7 @@
 
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import type { Occurrence } from "./store.js";
-import { formatDateTime } from "./time.js";
+import { addDaysToKey, formatDateTime, mskDateKey } from "./time.js";
 
 /** customId кнопок «Буду / Не буду» на анонсе: act_m:<id>:y|n */
 export const MARK_PREFIX = "act_m:";
@@ -27,6 +27,27 @@ function frame(...lines: string[]): string {
 
 function timePart(ms: number): string {
   return formatDateTime(ms).slice(11);
+}
+
+/**
+ * «Сегодня в 20:00» / «Завтра в 20:00» / «18.11.2026 в 20:00» — относительно момента публикации сообщения
+ * (refMs), чтобы текст не менялся при последующих правках сообщения.
+ */
+function whenText(startAt: number, refMs: number): string {
+  const day = mskDateKey(startAt);
+  const ref = mskDateKey(refMs);
+  const time = timePart(startAt);
+  if (day === ref) return `Сегодня в ${time}`;
+  if (day === addDaysToKey(ref, 1)) return `Завтра в ${time}`;
+  return `${formatDateTime(startAt).slice(0, 10)} в ${time}`;
+}
+
+/** «1 минуту / 2 минуты / 10 минут». */
+function minutesText(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  const word = mod10 === 1 && mod100 !== 11 ? "минуту" : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? "минуты" : "минут";
+  return `${n} ${word}`;
 }
 
 /** «Мероприятие "BLACKOUT"» / «Собрание Bloods». */
@@ -56,10 +77,10 @@ export function renderAnnounce(occ: Occurrence): Page {
   const ping = occ.pingRoleId ? `<@&${occ.pingRoleId}>\n` : "";
   const lines = [
     `**${occTitle(occ)}**`,
-    `Начало: **${timePart(occ.startAt)}** (МСК)`,
-    `В игре нужно быть за **${occ.prepMinutes}** мин.`,
+    `Начало: **${whenText(occ.startAt, occ.announce?.postedAt ?? Date.now())}** (МСК)`,
+    `В игре нужно быть за **${minutesText(occ.prepMinutes)}** до начала.`,
     "",
-    occ.closed ? "🔒 **Отметка закрыта**" : "**Кто будет?**",
+    occ.closed ? "**Отметка закрыта**" : "**Кто будет?**",
   ];
   return { content: ping + frame(...lines), components: [markRow(occ)] };
 }
@@ -70,7 +91,7 @@ function renderMeetingAnnounce(occ: Occurrence): Page {
     `**Собрание** ${role}`,
     `Дата: **${formatDateTime(occ.startAt)}** (МСК)`,
     "",
-    occ.closed ? "🔒 **Отметка закрыта**" : "**Кто будет?**",
+    occ.closed ? "**Отметка закрыта**" : "**Кто будет?**",
   ];
   return { content: frame(...lines), components: [markRow(occ)] };
 }
@@ -98,26 +119,40 @@ export function renderReminder(occ: Occurrence): string {
   if (occ.kind === "event") {
     return frame(
       `**Напоминание:** через 30 минут начнётся ${occTitle(occ)}`,
-      `Начало: **${timePart(occ.startAt)}** (МСК)`,
-      `В игре нужно быть за **${occ.prepMinutes}** мин.`
+      `Начало: **${whenText(occ.startAt, Date.now())}** (МСК)`,
+      `В игре нужно быть за **${minutesText(occ.prepMinutes)}** до начала.`
     );
   }
   const role = occ.pingRoleId ? `<@&${occ.pingRoleId}>` : occ.title;
   return frame(
     `**Напоминание:** через 30 минут начнётся собрание ${role}`,
-    `Начало: **${timePart(occ.startAt)}** (МСК)`
+    `Начало: **${whenText(occ.startAt, Date.now())}** (МСК)`
   );
 }
 
-// ---- отметка админа в N2 ----
+// ---- одно сообщение на МП в N2: кто отметился (после итогов оно же становится итоговым) ----
 
-export function renderMark(occ: Occurrence, userId: string): string {
-  const mark = occ.marks[userId];
-  const status = mark?.status === "yes" ? "✅ будет" : "❌ не будет";
+export function renderBoard(occ: Occurrence): string {
+  const names = (status: "yes" | "no") =>
+    Object.keys(occ.marks)
+      .filter((id) => occ.marks[id].status === status)
+      .map((id) => adminName(occ, id))
+      .sort((a, b) => a.localeCompare(b, "ru"));
+  const yes = names("yes");
+  const no = names("no");
+  const line = (icon: string, label: string, list: string[]) =>
+    list.length ? `${icon} **${label} (${list.length}):** ${list.join(", ")}` : `${icon} **${label}:** никто`;
   return frame(
-    `**${occTitle(occ)}** · ${formatDateTime(occ.startAt)} (МСК)`,
-    `**${adminName(occ, userId)}** — ${status}`
+    `**${occTitle(occ)}**`,
+    `Начало: ${formatDateTime(occ.startAt)} (МСК)`,
+    "",
+    line("✅", "Будут", yes),
+    line("❌", "Не будут", no)
   );
+}
+
+export function renderBoardCanceled(occ: Occurrence): string {
+  return frame(`**Отменено:** ${occTitle(occ)}`, `Дата: ${formatDateTime(occ.startAt)} (МСК)`);
 }
 
 // ---- проверка присутствия для старшего в N2 (с кнопками «Был / Не был») ----

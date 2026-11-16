@@ -13,6 +13,7 @@ import * as captAdmin from "./commands/captAdmin.js";
 import * as announce from "./commands/announce.js";
 import * as mp from "./commands/mp.js";
 import * as meeting from "./commands/meeting.js";
+import * as snew from "./commands/snew.js";
 import * as sklad from "./commands/sklad.js";
 import * as twink from "./commands/twink.js";
 import { initTwink } from "./twink/scheduler.js";
@@ -33,6 +34,7 @@ const commands = new Map<string, Command>([
   [announce.data.name, announce],
   [mp.data.name, mp],
   [meeting.data.name, meeting],
+  [snew.data.name, snew],
   [sklad.data.name, sklad],
   [twink.data.name, twink],
 ]);

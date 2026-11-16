@@ -159,6 +159,7 @@ pnpm --filter @workspace/discord-bot run start   # прод-запуск соб�
 
 - `/mp setup [server:] [announce:] [report:] [admin-roles:] [senior-role:]` —
   каналы N1/N2, роли админов и старшего (один вызов вместо четырёх старых команд).
+- `/snew faction: date: time:` — короткая регистрация собрания (то же, что `/meeting register`).
 - `/mp add`, `/mp edit` (включая `enabled:true|false` вместо прежнего `toggle`),
   `/mp skip`, `/mp move`, `/mp remove`, `/mp settings`.
 - Сообщение для старшего с кнопками «был / не был» уходит в N2 сразу после

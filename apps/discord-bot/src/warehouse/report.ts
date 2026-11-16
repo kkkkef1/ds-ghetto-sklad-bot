@@ -84,11 +84,29 @@ export function formatFactionReport(
 ): string[] {
   const header = `## ${factionName}\nПодозрительные действия со складом за ${describePeriod(period)}`;
   const blocks = suspects.map((s) => formatSuspect(s, detailed));
-  const messages = chunk(header, blocks);
-  const last = messages.length - 1;
-  if (messages[last].length + 1 + FACTION_SEPARATOR.length > MAX_MESSAGE) messages.push(FACTION_SEPARATOR);
-  else messages[last] += `\n${FACTION_SEPARATOR}`;
-  return messages;
+  return chunk(header, blocks);
+}
+
+/** Фракция прочитана, подозрительных действий нет — так и пишем. */
+export function formatNoSuspects(factionName: string, period: Period): string {
+  return `## ${factionName}\nПодозрительных действий со складом за ${describePeriod(period)} нет.`;
+}
+
+/**
+ * Склеивает отчёты фракций: между фракциями — две жирные линии, после последней текста нет, значит и линий нет.
+ * Линии дописываются к последнему сообщению фракции, а если не помещаются в лимит Discord — идут отдельным.
+ */
+export function joinFactionBlocks(blocks: string[][]): string[] {
+  const out: string[] = [];
+  blocks.forEach((block, i) => {
+    const isLast = i === blocks.length - 1;
+    out.push(...block.slice(0, -1));
+    const tail = block[block.length - 1];
+    if (isLast) out.push(tail);
+    else if (tail.length + 1 + FACTION_SEPARATOR.length > MAX_MESSAGE) out.push(tail, FACTION_SEPARATOR);
+    else out.push(`${tail}\n${FACTION_SEPARATOR}`);
+  });
+  return out;
 }
 
 function chunk(header: string, blocks: string[]): string[] {

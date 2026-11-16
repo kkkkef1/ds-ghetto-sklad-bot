@@ -6,6 +6,7 @@ import * as captAdmin from "./commands/captAdmin.js";
 import * as announce from "./commands/announce.js";
 import * as mp from "./commands/mp.js";
 import * as meeting from "./commands/meeting.js";
+import * as snew from "./commands/snew.js";
 import * as sklad from "./commands/sklad.js";
 import * as twink from "./commands/twink.js";
 
@@ -16,6 +17,7 @@ const commands = [
   announce.data.toJSON(),
   mp.data.toJSON(),
   meeting.data.toJSON(),
+  snew.data.toJSON(),
   sklad.data.toJSON(),
   twink.data.toJSON(),
 ];

@@ -13,7 +13,7 @@ import { CaptchaRequiredError, LogsPageError } from "./logsPage.js";
 import { formatDateTime } from "../activity/time.js";
 import { describePeriod, splitIntoPeriods, type Period } from "./periods.js";
 import { askAboutNewItems } from "./newItems.js";
-import { formatFactionReport } from "./report.js";
+import { formatFactionReport, formatNoSuspects, joinFactionBlocks } from "./report.js";
 import { LoginError, SiteSession } from "./siteSession.js";
 import { withSiteLock } from "./siteLock.js";
 import { getExcludedIds, getSettings } from "./store.js";
@@ -67,7 +67,8 @@ export async function runCheck(period: Period, io: OperatorIO, opts: { onlyFacti
 async function runCheckLocked(period: Period, io: OperatorIO, opts: { onlyFactions?: string[] }): Promise<RunResult> {
   const settings = getSettings();
   const outcomes: FactionOutcome[] = [];
-  const messages: string[] = [];
+  /** Отчёты по фракциям: по одному блоку (списку сообщений) на фракцию, склеиваются в конце. */
+  const blocks: string[][] = [];
   const notices: string[] = [];
   let session: SiteSession | null = null;
   const unknownItems = new Map<string, UnknownItem>();
@@ -82,6 +83,7 @@ async function runCheckLocked(period: Period, io: OperatorIO, opts: { onlyFactio
     for (const faction of factions) {
       const outcome: FactionOutcome = { factionName: faction.name, suspects: [], rowsRead: 0, actions: 0, unparsed: 0, unparsedSamples: [], pages: 0, incomplete: false };
       outcomes.push(outcome);
+      const block: string[] = [];
       try {
         // Перед каждой фракцией заново открываем страницу логов: это же проверяет, что сессия жива.
         const page = await session.ensureLogsPage();
@@ -139,8 +141,11 @@ async function runCheckLocked(period: Period, io: OperatorIO, opts: { onlyFactio
             notices.push(`${faction.name}: логи за период прочитаны не полностью (слишком много страниц) — список подозрительных может быть неполным.`);
           }
           // В канал уходят только отчёты о подозрительных; ошибки и предупреждения — владельцу в личку.
-          if (suspects.length) messages.push(...formatFactionReport(faction.name, chunk, suspects, settings.detailedReport));
+          if (suspects.length) block.push(...formatFactionReport(faction.name, chunk, suspects, settings.detailedReport));
         });
+        // Фракция прочитана без ошибок, а подозрительных нет — пишем об этом, а не молчим.
+        if (!block.length) block.push(formatNoSuspects(faction.name, period));
+        blocks.push(block);
       } catch (err) {
         if (err instanceof LoginError) throw err; // вход не удался — смысла продолжать нет
         outcome.error = describeError(err);
@@ -160,7 +165,7 @@ async function runCheckLocked(period: Period, io: OperatorIO, opts: { onlyFactio
     }
   }
 
-  return { period, outcomes, messages, notices, ok: outcomes.every((o) => !o.error) };
+  return { period, outcomes, messages: joinFactionBlocks(blocks), notices, ok: outcomes.every((o) => !o.error) };
 }
 
 function describeError(err: unknown): string {

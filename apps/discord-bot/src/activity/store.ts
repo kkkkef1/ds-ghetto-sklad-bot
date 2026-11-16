@@ -43,7 +43,7 @@ export interface ActivityEvent {
 export interface Mark {
   status: "yes" | "no";
   changedAt: number;
-  /** Сообщение с этой отметкой в N2 (редактируется при смене). */
+  /** Устарело: раньше у каждой отметки было своё сообщение в N2, теперь одно общее (boardMessages). */
   messageId: string | null;
 }
 
@@ -75,6 +75,11 @@ export interface Occurrence {
   adminIds: string[] | null;
   /** userId -> решение старшего. */
   confirm: Record<string, "present" | "absent">;
+  /**
+   * Одно сообщение на МП в N2 (отметки «буду / не буду»; после итогов оно же становится итоговым).
+   * У старых записей поля нет — читать через `?? []`.
+   */
+  boardMessages?: MessageRef[];
   reportMessages: MessageRef[];
   reportDone: boolean;
   summaryMessages: MessageRef[];
@@ -202,6 +207,7 @@ export function createOccurrence(
     names: {},
     adminIds: null,
     confirm: {},
+    boardMessages: [],
     reportMessages: [],
     reportDone: false,
     summaryMessages: [],

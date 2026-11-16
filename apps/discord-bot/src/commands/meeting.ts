@@ -55,6 +55,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   const sub = interaction.options.getSubcommand();
   const noPing = { parse: [] as never[] };
 
+  if (sub === "register") return registerMeeting(interaction);
+
   // Список собраний открыт всем; регистрировать и отменять — админы сервера, модераторы и создатель.
   if (sub !== "list" && !(await canManageServer(interaction))) {
     await interaction.reply({
@@ -91,7 +93,22 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
 
-  // register
+}
+
+/** Регистрация собрания: общая для `/meeting register` и короткой `/snew`. */
+export async function registerMeeting(interaction: ChatInputCommandInteraction): Promise<void> {
+  const guildId = interaction.guildId;
+  if (!guildId || !interaction.guild) {
+    await interaction.reply({ content: "Команда работает только на сервере.", ephemeral: true });
+    return;
+  }
+  if (!(await canManageServer(interaction))) {
+    await interaction.reply({
+      content: "Собрания могут регистрировать только админы сервера, модераторы и создатель.",
+      ephemeral: true,
+    });
+    return;
+  }
   const role = interaction.options.getRole("faction", true);
   if (role.id === guildId) {
     await interaction.reply({ content: "Нужна роль фракции, а не @everyone.", ephemeral: true });

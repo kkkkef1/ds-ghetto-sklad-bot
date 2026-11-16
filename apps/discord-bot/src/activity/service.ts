@@ -16,7 +16,8 @@ import { isCreatorOrModerator } from "../captTracker/store.js";
 import {
   adminName,
   renderAnnounce,
-  renderMark,
+  renderBoard,
+  renderBoardCanceled,
   renderReminder,
   renderReportPages,
   renderSummaryPages,
@@ -214,6 +215,8 @@ async function sendReport(occ: Occurrence): Promise<void> {
   const settings = getGuildSettings(occ.guildId);
   const channel = await getChannel(settings.reportChannelId);
   if (!channel) throw new Error("канал N2 не настроен или недоступен");
+  // Сначала табло с отметками (если никто не отмечался — оно просто покажет «никто»), под ним — сообщение для старшего.
+  await syncBoard(occ, occ.summaryDone ? renderSummaryPages(occ) : [renderBoard(occ)]);
   const pages = renderReportPages(occ, settings.seniorRoleId);
   await syncPages(channel, occ.reportMessages, pages, settings.seniorRoleId ? [settings.seniorRoleId] : []);
   occ.reportDone = true;
@@ -230,6 +233,12 @@ async function syncSummary(occ: Occurrence): Promise<void> {
   await syncPages(channel, occ.summaryMessages, pages, []);
   occ.summaryDone = true;
   persist();
+  // То же самое итоговое сообщение заменяет табло отметок в N2 (там оно остаётся единственным на МП над сообщением для старшего).
+  try {
+    await syncBoard(occ, renderSummaryPages(occ));
+  } catch (err) {
+    console.error(`[activity] Не удалось заменить табло в N2 итогами (${occ.id}):`, err);
+  }
 }
 
 async function tryStage(occ: Occurrence, stage: string, fn: () => Promise<void>): Promise<void> {
@@ -394,6 +403,9 @@ export async function cancelOccurrence(occ: Occurrence): Promise<void> {
     } catch (err) {
       console.error(`[activity] Не удалось пометить анонс ${occ.id} отменённым:`, err);
     }
+    if (occ.boardMessages?.length) {
+      await syncBoard(occ, [renderBoardCanceled(occ)]).catch((err) => console.error(`[activity] Не удалось пометить табло ${occ.id} отменённым:`, err));
+    }
   });
 }
 
@@ -440,11 +452,11 @@ export async function handleMarkButton(interaction: ButtonInteraction): Promise<
     }
 
     occ.names[member.id] = member.displayName;
-    occ.marks[member.id] = { status, changedAt: now, messageId: existing?.messageId ?? null };
+    occ.marks[member.id] = { status, changedAt: now, messageId: null };
     persist();
 
     try {
-      await publishMark(occ, member.id);
+      await publishMark(occ);
     } catch (err) {
       console.error(`[activity] Не удалось отправить отметку в N2 (${occ.id}):`, err);
     }
@@ -452,25 +464,20 @@ export async function handleMarkButton(interaction: ButtonInteraction): Promise<
   });
 }
 
-/** Сообщение с отметкой админа в N2: новое при первой отметке, редактируется при смене. */
-async function publishMark(occ: Occurrence, userId: string): Promise<void> {
+/**
+ * Одно сообщение на МП в N2. До итогов в нём список «кто отметился» (правится при каждой отметке),
+ * после итогов оно же заменяется итоговым текстом. Лишние отметки в N2 новых сообщений не создают.
+ */
+async function syncBoard(occ: Occurrence, pages: string[]): Promise<void> {
   const settings = getGuildSettings(occ.guildId);
   const channel = await getChannel(settings.reportChannelId);
   if (!channel) return; // N2 не настроен — отметка просто сохранена
-  const mark = occ.marks[userId];
-  const content = renderMark(occ, userId);
+  occ.boardMessages ??= [];
+  await syncPages(channel, occ.boardMessages, pages.map((content) => ({ content, components: [] })), []);
+}
 
-  if (mark.messageId) {
-    try {
-      await channel.messages.edit(mark.messageId, { content, allowedMentions: { parse: [] } });
-      return;
-    } catch (err) {
-      if (discordErrorCode(err) !== UNKNOWN_MESSAGE) throw err;
-    }
-  }
-  const sent = await channel.send({ content, allowedMentions: { parse: [] } });
-  mark.messageId = sent.id;
-  persist();
+async function publishMark(occ: Occurrence): Promise<void> {
+  await syncBoard(occ, occ.summaryDone ? renderSummaryPages(occ) : [renderBoard(occ)]);
 }
 
 /** «Был / Не был» под админом в сообщении для старшего. Повторное нажатие на ту же кнопку снимает решение. */
