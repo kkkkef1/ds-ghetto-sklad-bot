@@ -43,6 +43,8 @@ export interface CategoryLine {
   items: { name: string; quantity: number; /** «склад» или номер машины (BLOODS05); у наборов нет. */ place?: string }[];
   /** Только для наборов: сколько наборов взято ради этой категории. */
   kitCount?: number;
+  /** Пояснение после числа, например «за 3 мин». */
+  note?: string;
 }
 
 /** Одна строка короткого отчёта: превышение по категории (с разбивкой по предметам) или готовый текст. */
@@ -76,6 +78,8 @@ export interface Suspect {
 interface TakeEvent {
   t: number;
   q: number;
+  /** Предмет + откуда взят (itemKey); для наборов пусто. */
+  key: string;
 }
 
 interface Bucket {
@@ -109,9 +113,14 @@ export function pickRule(rules: Rule[], action: WarehouseAction): Rule | null {
   return rules.find((r) => r.kind === kind && ruleMatches(r, action)) ?? null;
 }
 
-/** Максимум единиц за любое окно длиной windowMs (события отсортированы по времени). */
-function maxInWindow(events: TakeEvent[], windowMs: number): number {
+/**
+ * Максимум единиц за любое окно длиной windowMs (события отсортированы по времени)
+ * и что именно (предмет + откуда) взято в этом самом окне.
+ */
+function bestWindow(events: TakeEvent[], windowMs: number): { sum: number; items: Map<string, number> } {
   let best = 0;
+  let bestLeft = 0;
+  let bestRight = -1;
   let sum = 0;
   let left = 0;
   for (let right = 0; right < events.length; right++) {
@@ -120,10 +129,21 @@ function maxInWindow(events: TakeEvent[], windowMs: number): number {
       sum -= events[left].q;
       left++;
     }
-    if (sum > best) best = sum;
+    if (sum > best) {
+      best = sum;
+      bestLeft = left;
+      bestRight = right;
+    }
   }
-  return best;
+  const items = new Map<string, number>();
+  for (let i = bestLeft; i <= bestRight; i++) {
+    const e = events[i];
+    if (e.key) items.set(e.key, (items.get(e.key) ?? 0) + e.q);
+  }
+  return { sum: best, items };
 }
+
+const maxInWindow = (events: TakeEvent[], windowMs: number): number => bestWindow(events, windowMs).sum;
 
 const KEY_SEP = "\u0000";
 /** Предмет + откуда взят: один и тот же предмет из склада и из машины — разные строки отчёта. */
@@ -236,7 +256,7 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
     const bucket = bucketOf(ensurePerson(), rule);
     if (a.kind === "take") {
       bucket.taken += a.quantity;
-      bucket.events.push({ t: a.time, q: a.quantity });
+      bucket.events.push({ t: a.time, q: a.quantity, key: itemKey(a.item, a.place) });
       inc(bucket.byItem, itemKey(a.item, a.place), a.quantity);
     } else {
       bucket.put += a.quantity;
@@ -270,10 +290,11 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
         score += total / rule.limit;
       }
       if (rule.burstCount > 0 && rule.burstMinutes > 0) {
-        const burst = maxInWindow(bucket.events, rule.burstMinutes * 60_000);
+        const { sum: burst, items: burstItems } = bestWindow(bucket.events, rule.burstMinutes * 60_000);
         if (burst >= rule.burstCount) {
           reasons.push(`${rule.label}: ${burst} шт. за ${rule.burstMinutes} мин (порог ${rule.burstCount})`);
-          exceeded.push({ text: `${rule.label} — ${burst} за ${rule.burstMinutes} мин` });
+          // С разбивкой: что именно и откуда взято в этом окне.
+          exceeded.push({ category: { ...toLine(rule, burstItems), total: burst, note: `за ${rule.burstMinutes} мин` } });
           score += burst / rule.burstCount;
         }
       }
@@ -287,7 +308,7 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
         score += times.length / rule.limit;
       }
       if (rule.burstCount > 0 && rule.burstMinutes > 0) {
-        const burst = maxInWindow(times.map((t) => ({ t, q: 1 })), rule.burstMinutes * 60_000);
+        const burst = maxInWindow(times.map((t) => ({ t, q: 1, key: "" })), rule.burstMinutes * 60_000);
         if (burst >= rule.burstCount) {
           reasons.push(`Набор «${kitName}»: ${burst} раз за ${rule.burstMinutes} мин (порог ${rule.burstCount})`);
           exceeded.push({ text: `Набор «${kitName}» — ${burst} раз за ${rule.burstMinutes} мин` });

@@ -40,7 +40,7 @@ export function formatCategory(line: CategoryLine, direction: "take" | "put" = "
   } else {
     details = [formatItems(line.items, direction), kits].filter(Boolean).join(", ");
   }
-  return `${line.label} — ${line.total}${details ? ` (${details})` : ""}`;
+  return `${line.label} — ${line.total}${line.note ? ` ${line.note}` : ""}${details ? ` (${details})` : ""}`;
 }
 
 /**

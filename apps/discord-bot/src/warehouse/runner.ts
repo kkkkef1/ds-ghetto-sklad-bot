@@ -44,7 +44,7 @@ export interface RunResult {
 }
 
 /** Номер сборки: показывается в сводке и в /sklad status, чтобы видеть, какой код реально запущен на сервере. */
-export const BUILD_ID = "2026-11-13.r7";
+export const BUILD_ID = "2026-11-16.r9";
 
 let running = false;
 export const isRunning = (): boolean => running;
