@@ -45,6 +45,9 @@ export interface CategoryLine {
   kitCount?: number;
 }
 
+/** Одна строка короткого отчёта: превышение по категории (с разбивкой по предметам) или готовый текст. */
+export type ExceededLine = { category: CategoryLine } | { text: string };
+
 export interface KitIssue {
   name: string;
   times: number;
@@ -58,6 +61,8 @@ export interface Suspect {
   score: number;
   /** Что именно превышено (коротко). */
   reasons: string[];
+  /** То же в коротком виде для отчёта: только превышенное, возвраты уже вычтены, без лимитов. */
+  exceeded: ExceededLine[];
   /** Всё, что игрок взял со склада и из машин фракции за период. */
   warehouse: CategoryLine[];
   /** Всё, что игрок вернул на склад/в машины. */
@@ -132,6 +137,28 @@ function toLine(rule: Rule, byItem: Map<string, number>, kitCount?: number): Cat
     })
     .sort((a, b) => b.quantity - a.quantity);
   return { label: rule.label, total: items.reduce((sum, it) => sum + it.quantity, 0), items, ...(kitCount !== undefined ? { kitCount } : {}) };
+}
+
+/**
+ * Категория для короткого отчёта: предметы уже с вычетом возвращённого (по тому же предмету и месту),
+ * к ним добавлено содержимое наборов (место «набор»). Итог — то же число, по которому сравнивался лимит.
+ */
+function netLine(bucket: Bucket, netReturns: boolean, total: number): CategoryLine {
+  const net = new Map<string, number>();
+  for (const [key, q] of bucket.byItem) {
+    const left = netReturns ? q - (bucket.putByItem.get(key) ?? 0) : q;
+    if (left > 0) net.set(key, left);
+  }
+  const items = [...net.entries()].map(([key, quantity]) => {
+    const [name, place] = key.split(KEY_SEP);
+    return place ? { name, quantity, place } : { name, quantity };
+  });
+  for (const [key, quantity] of bucket.kitByItem) {
+    const [name] = key.split(KEY_SEP);
+    items.push({ name, quantity, place: "набор" });
+  }
+  items.sort((a, b) => b.quantity - a.quantity);
+  return { label: bucket.rule.label, total, items };
 }
 
 function countKits(times: Map<string, number[]>): number {
@@ -220,6 +247,7 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
   const suspects: Suspect[] = [];
   for (const [characterId, person] of people) {
     const reasons: string[] = [];
+    const exceeded: ExceededLine[] = [];
     let score = 0;
 
     for (const bucket of person.buckets.values()) {
@@ -238,12 +266,14 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
         if (bucket.kitTaken > 0) parts.push(`набрал из наборов ${bucket.kitTaken}, взял наборов: ${kitsCount}`);
         const showTotal = parts.length > 1 || (opts.netReturns && bucket.put > 0);
         reasons.push(`${rule.label}: ${parts.join("; ")}${showTotal ? ` → итого ${total}` : ""} (лимит ${rule.limit})`);
+        exceeded.push({ category: netLine(bucket, opts.netReturns, total) });
         score += total / rule.limit;
       }
       if (rule.burstCount > 0 && rule.burstMinutes > 0) {
         const burst = maxInWindow(bucket.events, rule.burstMinutes * 60_000);
         if (burst >= rule.burstCount) {
           reasons.push(`${rule.label}: ${burst} шт. за ${rule.burstMinutes} мин (порог ${rule.burstCount})`);
+          exceeded.push({ text: `${rule.label} — ${burst} за ${rule.burstMinutes} мин` });
           score += burst / rule.burstCount;
         }
       }
@@ -253,12 +283,14 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
       const { rule, times } = entry;
       if (rule.limit > 0 && times.length > rule.limit) {
         reasons.push(`Набор «${kitName}»: ${times.length} раз за период (лимит ${rule.limit})`);
+        exceeded.push({ text: `Набор «${kitName}» — ${times.length} раз` });
         score += times.length / rule.limit;
       }
       if (rule.burstCount > 0 && rule.burstMinutes > 0) {
         const burst = maxInWindow(times.map((t) => ({ t, q: 1 })), rule.burstMinutes * 60_000);
         if (burst >= rule.burstCount) {
           reasons.push(`Набор «${kitName}»: ${burst} раз за ${rule.burstMinutes} мин (порог ${rule.burstCount})`);
+          exceeded.push({ text: `Набор «${kitName}» — ${burst} раз за ${rule.burstMinutes} мин` });
           score += burst / rule.burstCount;
         }
       }
@@ -268,6 +300,7 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
         for (let i = 1; i < times.length; i++) if (times[i] - times[i - 1] < cooldownMs) violations++;
         if (violations >= opts.kitCooldownViolations) {
           reasons.push(`Набор «${kitName}»: взят раньше перезарядки (${entry.cooldownMin} мин) ${violations} раз`);
+          exceeded.push({ text: `Набор «${kitName}» — ${violations} раз раньше перезарядки (${entry.cooldownMin} мин)` });
           score += violations;
         }
       }
@@ -283,6 +316,7 @@ export function analyzeActions(actions: WarehouseAction[], opts: AnalyzeOptions)
       characterName: person.name,
       score,
       reasons,
+      exceeded,
       warehouse: buckets.filter((b) => b.taken > 0).map((b) => toLine(b.rule, b.byItem)),
       returned: buckets.filter((b) => b.put > 0).map((b) => toLine(b.rule, b.putByItem)),
       kits: buckets.filter((b) => b.kitTaken > 0).map((b) => toLine(b.rule, b.kitByItem, countKits(b.kitTimes))),

@@ -74,6 +74,8 @@ interface StoreData {
   factions: FactionSetting[];
   rules: Rule[];
   netReturns: boolean;
+  /** true — подробный отчёт (взял/вернул/наборы/пороги); false — коротко, только превышенное. */
+  detailedReport: boolean;
   kitCooldownCheck: boolean;
   kitCooldownViolations: number;
   exclusions: Exclusion[];
@@ -164,6 +166,7 @@ function emptyStore(): StoreData {
     factions: defaultFactions(),
     rules: defaultRules(),
     netReturns: true,
+    detailedReport: false,
     kitCooldownCheck: true,
     kitCooldownViolations: 2,
     exclusions: [],
@@ -205,6 +208,7 @@ function load(): StoreData {
         pendingItems: raw.pendingItems && typeof raw.pendingItems === "object" ? raw.pendingItems : base.pendingItems,
         scheduleMinutes: normalizeSchedule(raw.scheduleMinutes) ?? base.scheduleMinutes,
         netReturns: typeof raw.netReturns === "boolean" ? raw.netReturns : base.netReturns,
+        detailedReport: typeof raw.detailedReport === "boolean" ? raw.detailedReport : base.detailedReport,
         kitCooldownCheck: typeof raw.kitCooldownCheck === "boolean" ? raw.kitCooldownCheck : base.kitCooldownCheck,
         kitCooldownViolations: typeof raw.kitCooldownViolations === "number" ? raw.kitCooldownViolations : base.kitCooldownViolations,
         exclusions: Array.isArray(raw.exclusions) ? raw.exclusions : base.exclusions,
@@ -272,6 +276,11 @@ export function setSchedule(minutes: number[]): number[] {
 
 export function setNetReturns(value: boolean): void {
   data.netReturns = value;
+  persist();
+}
+
+export function setDetailedReport(value: boolean): void {
+  data.detailedReport = value;
   persist();
 }
 

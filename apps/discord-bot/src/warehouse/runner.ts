@@ -139,7 +139,7 @@ async function runCheckLocked(period: Period, io: OperatorIO, opts: { onlyFactio
             notices.push(`${faction.name}: логи за период прочитаны не полностью (слишком много страниц) — список подозрительных может быть неполным.`);
           }
           // В канал уходят только отчёты о подозрительных; ошибки и предупреждения — владельцу в личку.
-          if (suspects.length) messages.push(...formatFactionReport(faction.name, chunk, suspects));
+          if (suspects.length) messages.push(...formatFactionReport(faction.name, chunk, suspects, settings.detailedReport));
         });
       } catch (err) {
         if (err instanceof LoginError) throw err; // вход не удался — смысла продолжать нет

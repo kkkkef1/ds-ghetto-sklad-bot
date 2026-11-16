@@ -100,6 +100,7 @@ export const data = new SlashCommandBuilder()
       .setDescription("Переключатели")
       .addBooleanOption((o) => o.setName("skip_seen").setDescription("Не нажимать «(ч)» у тех, чьи ID уже встретились (быстрее)"))
       .addBooleanOption((o) => o.setName("code_block").setDescription("Результат в блоке кода (удобно копировать)"))
+      .addIntegerOption((o) => o.setName("progress_sec").setDescription("Как часто обновлять сообщение о ходе проверки, секунд (по умолчанию 60)").setMinValue(10).setMaxValue(3600))
   )
   .addSubcommand((sc) =>
     sc
@@ -159,7 +160,7 @@ function renderStatus(): string {
     `**Канал:** ${s.channelId ? `<#${s.channelId}>` : "не задан (/twink channel) — без него автопроверка не запускается"}`,
     `**Фракции (общие со складом):** ${getFactions().map((f) => f.name).join(", ") || "нет"}`,
     `**Паузы:** перед нажатием ${s.delayMs} мс + случайно до ${s.jitterMs} мс, ожидание окна ${s.waitModalMs} мс`,
-    `**После «by»:** ${s.nickname}`,
+    `**После «by»:** ${s.nickname}; **ход проверки обновляется** раз в ${s.progressSeconds} с`,
     `**Пропуск уже встреченных ID:** ${s.skipSeen ? "да" : "нет"}; **блок кода:** ${s.codeBlock ? "да" : "нет"}`,
     `**Свои фракции:** ${Object.keys(s.customFactions).length}`,
     "",
@@ -286,10 +287,15 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     case "options": {
       const skip = interaction.options.getBoolean("skip_seen");
       const block = interaction.options.getBoolean("code_block");
-      if (skip === null && block === null) return void (await reply("Укажите skip_seen и/или code_block."));
-      patchSettings({ ...(skip !== null ? { skipSeen: skip } : {}), ...(block !== null ? { codeBlock: block } : {}) });
+      const progress = interaction.options.getInteger("progress_sec");
+      if (skip === null && block === null && progress === null) return void (await reply("Укажите skip_seen, code_block и/или progress_sec."));
+      patchSettings({
+        ...(skip !== null ? { skipSeen: skip } : {}),
+        ...(block !== null ? { codeBlock: block } : {}),
+        ...(progress !== null ? { progressSeconds: progress } : {}),
+      });
       const n = getSettings();
-      return void (await reply(`Пропуск уже встреченных ID: ${n.skipSeen ? "включён" : "выключен"}. Блок кода в результате: ${n.codeBlock ? "включён" : "выключен"}.`));
+      return void (await reply(`Пропуск уже встреченных ID: ${n.skipSeen ? "включён" : "выключен"}. Блок кода в результате: ${n.codeBlock ? "включён" : "выключен"}. Сообщение о ходе проверки обновляется раз в ${n.progressSeconds} с.`));
     }
 
     case "link": {

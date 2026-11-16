@@ -24,7 +24,6 @@ import { fmtDuration, hm, progressOf, renderProgress, renderResults } from "./re
 import { getRun, getSettings, linkFor, markDone, MIN_DELAY_MS, persist, setLastRun, setRun, type RunState } from "./store.js";
 
 const MEMBER_SELECTOR = 'a.link_lock[onclick*="Mi.showMemberChars"]';
-const PROGRESS_EVERY_MS = 10 * 60_000;
 
 export const ownerId = (): string | null => process.env.WH_OWNER_ID?.trim() || null;
 
@@ -122,12 +121,17 @@ async function channelOf(client: Client): Promise<TextBasedChannel | null> {
   return ch && "send" in ch ? ch : null;
 }
 
+/** Последний отправленный текст: если он не изменился, сообщение не правим. */
+let lastProgressText: string | null = null;
+
 async function updateProgress(client: Client): Promise<void> {
   const run = getRun();
   if (!run) return;
   const channel = await channelOf(client);
   if (!channel) return;
   const content = renderProgress(run, Date.now());
+  if (content === lastProgressText) return;
+  lastProgressText = content;
   if (run.progressMessageId) {
     try {
       const msg = await channel.messages.fetch(run.progressMessageId);
@@ -244,8 +248,21 @@ async function execute(client: Client, run: RunState, seq: number): Promise<void
   stopRequested = run.status === "stopping";
   if (!stopRequested) run.status = "queued";
   persist();
+  lastProgressText = null;
   await updateProgress(client);
-  const timer = setInterval(() => void updateProgress(client).catch(() => {}), PROGRESS_EVERY_MS);
+  // Период обновления берётся из настроек при каждом круге, поэтому /twink options действует сразу.
+  let ticking = true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleTick = (): void => {
+    timer = setTimeout(() => {
+      void updateProgress(client)
+        .catch(() => {})
+        .finally(() => {
+          if (ticking) scheduleTick();
+        });
+    }, Math.max(10, getSettings().progressSeconds) * 1000);
+  };
+  scheduleTick();
   let outcome: Outcome;
   try {
     outcome = await withSiteLock("твинки", () => work(client, run, seq));
@@ -255,7 +272,8 @@ async function execute(client: Client, run: RunState, seq: number): Promise<void
     await pause(client, run, `ошибка: ${reason}`);
     outcome = "aborted";
   } finally {
-    clearInterval(timer);
+    ticking = false;
+    if (timer) clearTimeout(timer);
   }
   if (outcome === "done" || outcome === "stopped") await finish(client, run, outcome);
 }

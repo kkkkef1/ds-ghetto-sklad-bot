@@ -1,6 +1,7 @@
 // ===================== ТЕКСТ СООБЩЕНИЙ В КАНАЛ =====================
 
 import { MSK_OFFSET_MS } from "../activity/time.js";
+import { FACTION_SEPARATOR } from "../warehouse/report.js";
 import type { Finding, RunState } from "./store.js";
 
 const LIMIT = 1800;
@@ -84,6 +85,8 @@ export function renderResults(findings: Finding[], factionNames: string[], codeB
       chunk.push(block.slice(0, LIMIT - 40));
     }
     flush();
+    // Две жирные линии после фракции — как в отчёте склада.
+    messages[messages.length - 1] += `\n${FACTION_SEPARATOR}`;
   }
   return messages;
 }

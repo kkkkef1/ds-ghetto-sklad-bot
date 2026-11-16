@@ -39,6 +39,7 @@ import {
   removeRule,
   resetRules,
   setChannel,
+  setDetailedReport,
   setEnabled,
   setKitCooldown,
   setLastRunSummary,
@@ -115,6 +116,12 @@ export const data = new SlashCommandBuilder()
       .setName("returns")
       .setDescription("Вычитать ли возвращённое на склад из взятого")
       .addBooleanOption((o) => o.setName("enabled").setDescription("true — вычитать (по умолчанию), false — считать только «взял»").setRequired(true))
+  )
+  .addSubcommand((sc) =>
+    sc
+      .setName("detail")
+      .setDescription("Вид отчёта: коротко (только превышенное) или подробно")
+      .addBooleanOption((o) => o.setName("enabled").setDescription("true — подробный отчёт (взял, вернул, наборы), false — коротко (по умолчанию)").setRequired(true))
   )
   .addSubcommand((sc) =>
     sc
@@ -320,6 +327,11 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
         setNetReturns(enabled);
         return void (await reply(enabled ? "Возвращённое на склад вычитается из взятого." : "Считается только взятое, возвраты не учитываются."));
       }
+      case "detail": {
+        const enabled = interaction.options.getBoolean("enabled", true);
+        setDetailedReport(enabled);
+        return void (await reply(enabled ? "Отчёт теперь подробный: взял, вернул, наборы и пороги." : "Отчёт теперь короткий: только превышенное, возвраты уже вычтены, без лимитов."));
+      }
       case "cooldown": {
         const check = interaction.options.getBoolean("check") ?? undefined;
         const violations = interaction.options.getInteger("violations") ?? undefined;
@@ -418,6 +430,7 @@ function renderStatus(): string {
     `**Канал отчётов:** ${s.channelId ? `<#${s.channelId}>` : "не задан (/sklad channel) — без него автопроверка не запускается"}`,
     `**Фракции:** ${getFactions().map((f) => f.name).join(", ") || "нет"}`,
     `**Возвраты вычитаются:** ${s.netReturns ? "да" : "нет"}`,
+    `**Вид отчёта:** ${s.detailedReport ? "подробный" : "короткий (/sklad detail — переключить)"}`,
     `**Перезарядка наборов:** ${s.kitCooldownCheck ? `проверка включена, порог ${s.kitCooldownViolations}` : "проверка выключена"}`,
     `**Исключений:** ${s.exclusions.length}`,
     `**Сборка:** ${BUILD_ID}`,

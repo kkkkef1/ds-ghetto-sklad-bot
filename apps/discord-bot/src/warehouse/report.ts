@@ -8,13 +8,14 @@ import type { CategoryLine, Suspect } from "./analyze.js";
 import { describePeriod, type Period } from "./periods.js";
 
 const MAX_MESSAGE = 1900;
-/** Разделитель между фракциями: ставится в конце отчёта по каждой фракции. */
-export const FACTION_SEPARATOR = "-".repeat(48);
+/** Разделитель между фракциями: две жирные линии в конце отчёта по каждой фракции (28 знаков — не переносится на телефоне). */
+export const FACTION_SEPARATOR = `${"━".repeat(28)}\n${"━".repeat(28)}`;
 const MAX_ITEMS_SHOWN = 5;
 
 /** «со склада» / «из машины BLOODS05»; для возврата — «на склад» / «в машину BLOODS05». */
 export function placeLabel(place: string | undefined, direction: "take" | "put"): string {
   if (!place) return "";
+  if (place === "набор") return "из наборов";
   if (place === "склад") return direction === "take" ? "со склада" : "на склад";
   return direction === "take" ? `из машины ${place}` : `в машину ${place}`;
 }
@@ -42,9 +43,18 @@ export function formatCategory(line: CategoryLine, direction: "take" | "put" = "
   return `${line.label} — ${line.total}${details ? ` (${details})` : ""}`;
 }
 
-/** Блок одного игрока. */
-export function formatSuspect(s: Suspect): string {
+/**
+ * Блок одного игрока.
+ * Коротко (по умолчанию): только превышенное, возвраты уже вычтены, лимиты не пишем.
+ *   Оружие — 14 (AK-47 ×9 со склада, Carbine Rifle ×5 из машины BLOODS05)
+ * Подробно (/sklad detail): полная картина — взял, вернул, наборы, пороги.
+ */
+export function formatSuspect(s: Suspect, detailed = false): string {
   const lines: string[] = [`**${s.characterName}** [${s.characterId}]`];
+  if (!detailed) {
+    for (const e of s.exceeded) lines.push("category" in e ? formatCategory(e.category) : e.text);
+    return lines.join("\n");
+  }
   for (const reason of s.reasons) lines.push(`**Превышено:** ${reason}`);
   if (s.warehouse.length) {
     lines.push("**Взял со склада / из машин:**");
@@ -70,9 +80,10 @@ export function formatFactionReport(
   factionName: string,
   period: Period,
   suspects: Suspect[],
+  detailed = false,
 ): string[] {
-  const header = `**${factionName}** — подозрительные действия со складом за ${describePeriod(period)}`;
-  const blocks = suspects.map(formatSuspect);
+  const header = `## ${factionName}\nПодозрительные действия со складом за ${describePeriod(period)}`;
+  const blocks = suspects.map((s) => formatSuspect(s, detailed));
   const messages = chunk(header, blocks);
   const last = messages.length - 1;
   if (messages[last].length + 1 + FACTION_SEPARATOR.length > MAX_MESSAGE) messages.push(FACTION_SEPARATOR);
@@ -88,7 +99,7 @@ function chunk(header: string, blocks: string[]): string[] {
     const block = raw.length > MAX_MESSAGE - 60 ? raw.slice(0, MAX_MESSAGE - 63) + "…" : raw;
     if (current.length + 2 + block.length > MAX_MESSAGE) {
       messages.push(current);
-      current = `${header} (продолжение)`;
+      current = `## ${header.slice(3).replace("\n", " (продолжение)\n")}`;
     }
     current += `\n\n${block}`;
   }

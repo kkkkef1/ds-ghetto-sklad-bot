@@ -39,6 +39,8 @@ export interface TwinkSettings {
   jitterMs: number;
   /** Сколько ждать окно со списком персонажей после нажатия, мс. */
   waitModalMs: number;
+  /** Как часто обновлять сообщение о ходе проверки, секунд (10…3600). */
+  progressSeconds: number;
   /** Что писать после «by». */
   nickname: string;
   /** Не нажимать «(ч)» у тех, чьи ID уже встретились. */
@@ -110,6 +112,7 @@ function emptyStore(): StoreData {
     delayMs: DEFAULT_DELAY_MS,
     jitterMs: 1000,
     waitModalMs: 1200,
+    progressSeconds: 60,
     nickname: "Фамилия",
     skipSeen: true,
     codeBlock: true,
