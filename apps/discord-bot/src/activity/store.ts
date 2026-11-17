@@ -86,6 +86,12 @@ export interface Occurrence {
   reportDone: boolean;
   summaryMessages: MessageRef[];
   summaryDone: boolean;
+  /** Через час после начала итоги получают окончательный вид (неотмеченные — поимённо). */
+  summaryFinalized?: boolean;
+  /** Когда старший подтвердил присутствие всех (сбрасывается, если он снял чьё-то решение). */
+  confirmedAllAt?: number | null;
+  /** Кнопки «был / не был» у сообщения старшего отключены. */
+  buttonsLocked?: boolean;
   /** Счётчик неудачных попыток по этапам, чтобы не долбить Discord бесконечно. */
   failures: Record<string, number>;
 }

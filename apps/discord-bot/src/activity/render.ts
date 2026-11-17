@@ -173,7 +173,7 @@ function confirmText(occ: Occurrence, userId: string): string {
   return c === "present" ? "🟢 был" : c === "absent" ? "🔴 не был" : "ожидает";
 }
 
-export function renderReportPages(occ: Occurrence, seniorRoleId: string | null): Page[] {
+export function renderReportPages(occ: Occurrence, seniorRoleId: string | null, locked = false): Page[] {
   const ping = seniorRoleId ? `<@&${seniorRoleId}>\n` : "";
   const ids = sortedAdminIds(occ);
 
@@ -207,11 +207,13 @@ export function renderReportPages(occ: Occurrence, seniorRoleId: string | null):
           new ButtonBuilder()
             .setCustomId(`${CONFIRM_PREFIX}${occ.id}:${id}:p`)
             .setLabel(`${short}: был`)
-            .setStyle(c === "present" ? ButtonStyle.Success : ButtonStyle.Secondary),
+            .setStyle(c === "present" ? ButtonStyle.Success : ButtonStyle.Secondary)
+            .setDisabled(locked),
           new ButtonBuilder()
             .setCustomId(`${CONFIRM_PREFIX}${occ.id}:${id}:a`)
             .setLabel(`не был`)
             .setStyle(c === "absent" ? ButtonStyle.Danger : ButtonStyle.Secondary)
+            .setDisabled(locked)
         );
       }
       rows.push(row);
@@ -225,6 +227,20 @@ export function renderReportPages(occ: Occurrence, seniorRoleId: string | null):
 
 const PAGE_LIMIT = 1800;
 
+/** Через сколько после начала итоги считаются окончательными, даже если старший отметил не всех. */
+export const SUMMARY_FINAL_AFTER_MS = 60 * 60_000;
+
+/** Итоги окончательные: старший отметил всех или прошёл час после начала. */
+export function summaryIsFinal(occ: Occurrence, now = Date.now()): boolean {
+  const ids = occ.adminIds ?? [];
+  const allDone = ids.length > 0 && ids.every((id) => occ.confirm[id]);
+  return allDone || now >= occ.startAt + SUMMARY_FINAL_AFTER_MS;
+}
+
+/**
+ * Итоги в N1. Сразу после начала МП в них только заголовок, а присутствующие добавляются по мере отметки старшим.
+ * Неотмеченные называются поимённо только в окончательном виде (всех отметили или прошёл час).
+ */
 export function renderSummaryPages(occ: Occurrence): string[] {
   const header = [`**Итоги: ${occTitle(occ)}**`, `Начало: ${formatDateTime(occ.startAt)} (МСК)`];
   const ids = sortedAdminIds(occ);
@@ -234,12 +250,17 @@ export function renderSummaryPages(occ: Occurrence): string[] {
   const present = ids.filter((id) => occ.confirm[id] === "present");
   const absent = ids.filter((id) => occ.confirm[id] === "absent");
   const pending = ids.filter((id) => !occ.confirm[id]);
+  const final = summaryIsFinal(occ);
 
   const lines: string[] = [
     ...present.map((id) => `🟢 ${adminName(occ, id)} — присутствовал`),
     ...absent.map((id) => `🔴 ${adminName(occ, id)} — отсутствовал`),
-    ...pending.map((id) => `${adminName(occ, id)} — не подтверждено старшим`),
+    ...(final ? pending.map((id) => `${adminName(occ, id)} — не подтверждено старшим`) : []),
   ];
+  if (!final && pending.length) {
+    if (!present.length && !absent.length) lines.push("Присутствующих пока не отмечено.");
+    lines.push(`Ждём отметки старшего: ещё ${pending.length}`);
+  }
 
   // Разделители занимают место в лимите сообщения.
   const budget = PAGE_LIMIT - DIVIDER.length * 2 - 10;

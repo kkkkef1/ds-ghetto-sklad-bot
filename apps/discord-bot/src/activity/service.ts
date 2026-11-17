@@ -18,6 +18,7 @@ import {
   renderAnnounce,
   renderBoard,
   renderBoardCanceled,
+  summaryIsFinal,
   renderReminder,
   renderReportPages,
   renderSummaryPages,
@@ -44,6 +45,10 @@ const TICK_MS = 20_000;
 const REMINDER_BEFORE_MS = 30 * MINUTE_MS;
 const REPORT_AFTER_MS = 0; // сообщение старшему уходит сразу после начала
 const SUMMARY_AFTER_MS = 60 * MINUTE_MS;
+/** Через сколько после полной отметки старшим кнопки «был / не был» отключаются. */
+const BUTTONS_LOCK_AFTER_MS = 30 * MINUTE_MS;
+/** Сколько после начала проведение ещё обрабатывается, даже если старший так и не отметил всех. */
+const KEEP_PROCESSING_MS = 24 * 60 * MINUTE_MS;
 /** Как часто один админ может менять свою отметку. */
 export const MARK_CHANGE_COOLDOWN_MS = 15 * MINUTE_MS;
 const MAX_STAGE_FAILURES = 5;
@@ -218,7 +223,7 @@ async function sendReport(occ: Occurrence): Promise<void> {
   const channel = await getChannel(settings.reportChannelId);
   if (!channel) throw new Error("канал N2 не настроен или недоступен");
   // Сначала табло с отметками (если никто не отмечался — оно просто покажет «никто»), под ним — сообщение для старшего.
-  await syncBoard(occ, occ.summaryDone ? renderSummaryPages(occ) : [renderBoard(occ)]);
+  await syncBoard(occ, boardPages(occ));
   const pages = renderReportPages(occ, settings.seniorRoleId);
   await syncPages(channel, occ.reportMessages, pages, settings.seniorRoleId ? [settings.seniorRoleId] : []);
   occ.reportDone = true;
@@ -241,12 +246,21 @@ async function syncSummary(occ: Occurrence): Promise<void> {
   await syncPages(channel, occ.summaryMessages, pages, []);
   occ.summaryDone = true;
   persist();
-  // То же самое итоговое сообщение заменяет табло отметок в N2 (там оно остаётся единственным на МП над сообщением для старшего).
+  // Когда итоги окончательные, то же сообщение заменяет табло отметок в N2 (над сообщением для старшего).
   try {
-    await syncBoard(occ, renderSummaryPages(occ));
+    if (summaryIsFinal(occ)) await syncBoard(occ, renderSummaryPages(occ));
   } catch (err) {
     console.error(`[activity] Не удалось заменить табло в N2 итогами (${occ.id}):`, err);
   }
+}
+
+async function lockReportButtons(occ: Occurrence): Promise<void> {
+  const settings = getGuildSettings(occ.guildId);
+  const channel = await getChannel(settings.reportChannelId);
+  if (!channel) throw new Error("канал N2 недоступен");
+  await syncPages(channel, occ.reportMessages, renderReportPages(occ, settings.seniorRoleId, true), []);
+  occ.buttonsLocked = true;
+  persist();
 }
 
 async function tryStage(occ: Occurrence, stage: string, fn: () => Promise<void>): Promise<void> {
@@ -302,10 +316,23 @@ async function processOccurrence(occ: Occurrence, now: number): Promise<void> {
     await tryStage(occ, "report", () => sendReport(occ));
   }
 
-  // 5. итоги в N1
+  // 5. итоги в N1: сразу после начала напоминание превращается в итоги, дальше они обновляются по мере отметки старшим
   if (!occ.summaryDone && now >= occ.startAt + REPORT_AFTER_MS) {
-    const ready = now >= occ.startAt + SUMMARY_AFTER_MS || (occ.reportDone && allConfirmed(occ));
-    if (ready) await tryStage(occ, "summary", () => syncSummary(occ));
+    await tryStage(occ, "summary", () => syncSummary(occ));
+  }
+
+  // 5b. через час после начала итоги получают окончательный вид (неотмеченные — поимённо)
+  if (occ.summaryDone && !occ.summaryFinalized && now >= occ.startAt + SUMMARY_AFTER_MS) {
+    await tryStage(occ, "summaryFinal", async () => {
+      await syncSummary(occ);
+      occ.summaryFinalized = true;
+      persist();
+    });
+  }
+
+  // 6. через 30 минут после того, как старший отметил всех, кнопки «был / не был» перестают работать
+  if (occ.reportDone && !occ.buttonsLocked && occ.confirmedAllAt && now >= occ.confirmedAllAt + BUTTONS_LOCK_AFTER_MS) {
+    await tryStage(occ, "lock", () => lockReportButtons(occ));
   }
 }
 
@@ -357,7 +384,11 @@ async function tick(): Promise<void> {
     const now = Date.now();
     scheduleEvents(now);
     for (const occ of listOccurrences()) {
-      if (occ.canceled || (occ.summaryDone && occ.closed && occ.reminderDone)) continue;
+      // Обработка заканчивается, когда всё сделано: итоги окончательные, кнопки отключены (или их нет / прошли сутки).
+      const finished =
+        occ.summaryDone && occ.summaryFinalized && occ.closed && occ.reminderDone &&
+        (occ.buttonsLocked || !occ.reportMessages.length || now >= occ.startAt + KEEP_PROCESSING_MS);
+      if (occ.canceled || finished) continue;
       await withLock(occ.id, () => processOccurrence(occ, now));
     }
     pruneOccurrences(now);
@@ -484,8 +515,11 @@ async function syncBoard(occ: Occurrence, pages: string[]): Promise<void> {
   await syncPages(channel, occ.boardMessages, pages.map((content) => ({ content, components: [] })), []);
 }
 
+/** Табло в N2: пока итоги не окончательные — отметки «буду / не буду», потом — итоги. */
+const boardPages = (occ: Occurrence): string[] => (summaryIsFinal(occ) ? renderSummaryPages(occ) : [renderBoard(occ)]);
+
 async function publishMark(occ: Occurrence): Promise<void> {
-  await syncBoard(occ, occ.summaryDone ? renderSummaryPages(occ) : [renderBoard(occ)]);
+  await syncBoard(occ, boardPages(occ));
 }
 
 /** «Был / Не был» под админом в сообщении для старшего. Повторное нажатие на ту же кнопку снимает решение. */
@@ -512,9 +546,16 @@ export async function handleConfirmButton(interaction: ButtonInteraction): Promi
       return;
     }
 
+    if (occ.buttonsLocked) {
+      await notify("Отметка присутствия закрыта: после полной отметки прошло больше 30 минут.");
+      return;
+    }
+
     const value = action === "p" ? "present" : "absent";
     if (occ.confirm[userId] === value) delete occ.confirm[userId];
     else occ.confirm[userId] = value;
+    // Запоминаем момент, когда старший отметил всех: от него идут 30 минут до отключения кнопок.
+    occ.confirmedAllAt = allConfirmed(occ) ? (occ.confirmedAllAt ?? Date.now()) : null;
     persist();
 
     // Перерисовать то сообщение, на котором нажали.
