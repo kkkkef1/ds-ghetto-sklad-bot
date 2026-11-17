@@ -65,6 +65,8 @@ export interface Occurrence {
   createdAt: number;
   announce: (MessageRef & { postedAt: number }) | null;
   reminderDone: boolean;
+  /** Сообщение-напоминание в N1: после начала МП оно редактируется в итоги (у старых записей поля нет). */
+  reminderMessage?: MessageRef | null;
   closed: boolean;
   canceled: boolean;
   /** userId -> отметка «буду / не буду». */

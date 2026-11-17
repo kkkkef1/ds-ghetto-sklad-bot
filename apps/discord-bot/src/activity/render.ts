@@ -117,7 +117,9 @@ function markRow(occ: Occurrence): ActionRowBuilder<ButtonBuilder> {
 
 export function renderReminder(occ: Occurrence): string {
   if (occ.kind === "event") {
-    return frame(
+    // Пингуем ту же роль, что и в анонсе (в тексте должно быть упоминание, иначе роль не получит пинг).
+    const ping = occ.pingRoleId ? `<@&${occ.pingRoleId}>\n` : "";
+    return ping + frame(
       `**Напоминание:** через 30 минут начнётся ${occTitle(occ)}`,
       `Начало: **${whenText(occ.startAt, Date.now())}** (МСК)`,
       `В игре нужно быть за **${minutesText(occ.prepMinutes)}** до начала.`

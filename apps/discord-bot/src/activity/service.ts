@@ -176,11 +176,13 @@ async function sendReminder(occ: Occurrence): Promise<void> {
   if (!occ.announce) return;
   const channel = await getChannel(occ.announce.channelId);
   if (!channel) throw new Error("канал N1 недоступен");
-  await channel.send({
+  // Отдельное сообщение (не ответом на анонс) с пингом той же роли. После начала МП оно превращается в итоги.
+  const sent = await channel.send({
     content: renderReminder(occ),
     allowedMentions: { roles: occ.pingRoleId ? [occ.pingRoleId] : [] },
-    reply: { messageReference: occ.announce.messageId, failIfNotExists: false },
   });
+  occ.reminderMessage = { channelId: channel.id, messageId: sent.id };
+  persist();
 }
 
 /** Составляет список админов для проверки присутствия: носители админских ролей + все, кто отмечался. */
@@ -230,6 +232,12 @@ async function syncSummary(occ: Occurrence): Promise<void> {
   const channel = await getChannel(settings.announceChannelId);
   if (!channel) throw new Error("канал N1 недоступен");
   const pages = renderSummaryPages(occ).map((content) => ({ content, components: [] }));
+  // Итоги занимают место напоминания: то же сообщение редактируется, пинг роли пропадает вместе со старым текстом.
+  if (!occ.summaryMessages.length && occ.reminderMessage) {
+    occ.summaryMessages.push(occ.reminderMessage);
+    occ.reminderMessage = null;
+    persist();
+  }
   await syncPages(channel, occ.summaryMessages, pages, []);
   occ.summaryDone = true;
   persist();
