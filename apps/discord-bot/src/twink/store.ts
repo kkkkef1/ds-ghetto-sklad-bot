@@ -90,6 +90,8 @@ export interface RunState {
   /** Сколько раз реально нажали «(ч)» / сколько пропустили как повтор. */
   clicked: number;
   skipped: number;
+  /** Нажатий, после которых окно со списком персонажей не удалось прочитать (их результат неизвестен). */
+  unread?: number;
   /** Секунды, потраченные на уже обработанные строки (для оценки времени окончания). */
   workMs: number;
   progressMessageId: string | null;
@@ -111,7 +113,7 @@ function emptyStore(): StoreData {
     leadHours: 3,
     delayMs: DEFAULT_DELAY_MS,
     jitterMs: 1000,
-    waitModalMs: 1200,
+    waitModalMs: 6000,
     progressSeconds: 60,
     nickname: "Фамилия",
     skipSeen: true,
@@ -132,7 +134,10 @@ function load(): StoreData {
   try {
     if (existsSync(DATA_FILE)) {
       const raw = JSON.parse(readFileSync(DATA_FILE, "utf-8")) as Partial<StoreData>;
-      return { ...base, ...raw, delayMs: Math.max(MIN_DELAY_MS, Number(raw.delayMs) || base.delayMs) };
+      // Старое значение по умолчанию (1200 мс) было слишком коротким для медленного ответа сайта: бот не успевал
+      // увидеть окно и принимал это за «нарушений нет». Заменяем его на новое; осознанно заданные значения не трогаем.
+      const waitModalMs = raw.waitModalMs === undefined || raw.waitModalMs === 1200 ? base.waitModalMs : raw.waitModalMs;
+      return { ...base, ...raw, waitModalMs, delayMs: Math.max(MIN_DELAY_MS, Number(raw.delayMs) || base.delayMs) };
     }
   } catch (err) {
     console.error("[twink] Не удалось прочитать файл настроек, начинаю с настроек по умолчанию:", err);

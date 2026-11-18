@@ -50,14 +50,6 @@ const COLLECT_SCRIPT = String.raw`(() => {
   return out;
 })()`;
 
-/** Закрывает окно с прошлого игрока и убирает его карточки, чтобы не прочитать старые данные. */
-const CLEAN_SCRIPT = String.raw`(() => {
-  var $ = window.jQuery || window.$;
-  try { if ($) $('.modal.show').modal('hide'); } catch (e) {}
-  document.querySelectorAll('.modal .card').forEach(function (c) { if (/ID:\s*\d+/.test(c.textContent || '')) c.remove(); });
-  return document.querySelectorAll('.modal.show').length;
-})()`;
-
 const CLICK_SCRIPT = (i: number): string => `(() => {
   var el = document.querySelector('[data-tw="${i}"]');
   if (!el) return false;
@@ -65,14 +57,21 @@ const CLICK_SCRIPT = (i: number): string => `(() => {
   return true;
 })()`;
 
-/** Читает карточки персонажей так же, как расширение: «ID: N» и строки «Фракция: …». */
+/**
+ * Читает карточки персонажей так же, как расширение: «ID: N» и строки «Фракция: …».
+ * Учитываются только видимые карточки: у «реактивных» окон прошлые карточки могут оставаться в
+ * странице скрытыми, и их нельзя принимать за данные текущего игрока.
+ * Страница при этом НЕ изменяется (ничего не закрываем и не удаляем): сайт сам перерисовывает окно.
+ */
 const PARSE_SCRIPT = String.raw`(() => {
-  var modal = document.querySelector('.modal.show') || document.querySelector('.modal');
-  var root = modal || document;
-  var cards = root.querySelectorAll('.card');
+  function vis(e) { return e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden'; }
+  var list = Array.prototype.filter.call(document.querySelectorAll('.modal .card'), vis);
+  if (!list.length) list = Array.prototype.filter.call(document.querySelectorAll('.card'), vis);
   var pairs = [];
   var ids = [];
-  cards.forEach(function (card) {
+  var cards = 0;
+  list.forEach(function (card) {
+    cards++;
     var m = (card.textContent || '').match(/ID:\s*(\d+)/);
     var id = m ? m[1] : null;
     if (id) ids.push(id);
@@ -84,7 +83,17 @@ const PARSE_SCRIPT = String.raw`(() => {
       }
     });
   });
-  return { pairs: pairs, ids: ids, cards: cards.length };
+  return { pairs: pairs, ids: ids, cards: cards };
+})()`;
+
+/** Что сейчас в странице про окна: для диагностики, когда окно не открывается. */
+const DIAG_SCRIPT = String.raw`(() => {
+  var out = { url: location.href, cardsInPage: document.querySelectorAll('.card').length, modals: [] };
+  document.querySelectorAll('.modal').forEach(function (m, i) {
+    if (i >= 6) return;
+    out.modals.push({ cls: m.className, shown: m.getClientRects().length > 0, cards: m.querySelectorAll('.card').length, text: (m.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160) });
+  });
+  return out;
 })()`;
 
 interface Item {
@@ -109,6 +118,16 @@ let stopRequested = false;
 /** Номер запуска: устаревшие (отменённые в очереди) задания узнают о себе по несовпадению. */
 let launchSeq = 0;
 const seenIds = new Set<string>();
+/** Сверка «ID из строки списка найден среди ID в окне»: пока всё сходится, повторы можно пропускать. */
+let idChecks = 0;
+let idMatches = 0;
+let skipWarned = false;
+/** Сколько раз подряд окно не удалось прочитать. */
+let unreadInRow = 0;
+/** Три и более подряд — это не случайность, а поломка: проверка встаёт на паузу. */
+const MAX_UNREAD_IN_ROW = 3;
+/** Минимум ожидания окна: ответ сайта бывает медленнее 1,2 с, а без данных проверка бессмысленна. */
+const MIN_WAIT_MODAL_MS = 4000;
 
 export const isRunActive = (): boolean => getRun() !== null;
 
@@ -177,6 +196,10 @@ export function startRun(client: Client, opts: StartOptions): { ok: true } | { o
   if (noLink.length) return { ok: false, reason: `Нет ссылки на список участников для: ${noLink.map((f) => f.name).join(", ")} (/twink link).` };
 
   seenIds.clear();
+  idChecks = 0;
+  idMatches = 0;
+  skipWarned = false;
+  unreadInRow = 0;
   setRun({
     id: opts.runId,
     kind: opts.kind,
@@ -189,6 +212,7 @@ export function startRun(client: Client, opts: StartOptions): { ok: true } | { o
     findings: [],
     clicked: 0,
     skipped: 0,
+    unread: 0,
     workMs: 0,
     progressMessageId: null,
     startedBy: opts.startedBy ?? null,
@@ -390,7 +414,9 @@ async function processItem(session: SiteSession, page: Page, factionName: string
   const settings = getSettings();
 
   // Этот игрок уже встречался в окне другого игрока (его ID был в списке персонажей) — не нажимаем.
-  if (settings.skipSeen && item.rowId && seenIds.has(item.rowId)) {
+  // Только после сверки: ID из строки должен совпадать с ID в окне (иначе мы не знаем, что это за число).
+  const calibrated = idChecks >= 3 && idMatches === idChecks;
+  if (settings.skipSeen && calibrated && item.rowId && seenIds.has(item.rowId)) {
     run.skipped++;
     return true;
   }
@@ -403,21 +429,47 @@ async function processItem(session: SiteSession, page: Page, factionName: string
   }
   if (stopRequested) return false;
 
-  if ((await page.evaluate<number>(CLEAN_SCRIPT)) > 0) {
-    await page.keyboard.press("Escape").catch(() => {});
-    await page.waitForTimeout(400);
+  // Окно НЕ закрываем и в странице ничего не удаляем (как расширение): сайт сам перерисует его для нового игрока.
+  // Новые данные узнаём по тому, что набор ID в окне изменился.
+  const waitMs = Math.max(MIN_WAIT_MODAL_MS, settings.waitModalMs);
+  const before = await page.evaluate<Parsed>(PARSE_SCRIPT);
+  const beforeSig = signature(before);
+  let parsed: Parsed | null = null;
+  for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+    const clicked = await page.evaluate<boolean>(CLICK_SCRIPT(item.i));
+    if (!clicked) {
+      throw new BlockedError((await session.blockReason()) ?? "страница списка изменилась: кнопка «(ч)» не найдена (сессия сброшена или обновился сайт)");
+    }
+    if (attempt === 0) run.clicked++;
+    parsed = await waitForNewCards(page, beforeSig, item.rowId, waitMs);
+    if (!parsed) {
+      const reason = await session.blockReason();
+      if (reason) throw new BlockedError(reason);
+    }
   }
-  const clicked = await page.evaluate<boolean>(CLICK_SCRIPT(item.i));
-  if (!clicked) {
-    throw new BlockedError((await session.blockReason()) ?? "страница списка изменилась: кнопка «(ч)» не найдена (сессия сброшена или обновился сайт)");
+  if (!parsed) {
+    // Окно не прочиталось даже со второй попытки. Раньше это молча считалось «нарушений нет» — теперь учитываем.
+    run.unread = (run.unread ?? 0) + 1;
+    unreadInRow++;
+    persist();
+    if (unreadInRow >= MAX_UNREAD_IN_ROW) {
+      await reportUnreadDiagnostics(session, page, io);
+      run.unread = Math.max(0, (run.unread ?? 0) - 1); // этот игрок будет проверен заново после /twink resume
+      run.clicked--;
+      unreadInRow = 0;
+      throw new BlockedError(`окно со списком персонажей не открывается после нажатия «(ч)» (${MAX_UNREAD_IN_ROW} раза подряд) — подробности и скриншот отправил в личку`);
+    }
+    return true;
   }
-  run.clicked++;
+  unreadInRow = 0;
 
-  const parsed = await waitForCards(page, settings.waitModalMs);
-  if (!parsed.cards) {
-    const reason = await session.blockReason();
-    if (reason) throw new BlockedError(reason);
-    return true; // окно не открылось, а блока нет — идём дальше, как расширение («меньше 2 фракций — пропускаю»)
+  if (item.rowId) {
+    idChecks++;
+    if (parsed.ids.includes(item.rowId)) idMatches++;
+    else if (!skipWarned) {
+      skipWarned = true;
+      await io.notify(`Пропуск повторов отключён: ID из строки списка (${item.rowId}) не нашёлся в окне этого игрока (ID в окне: ${parsed.ids.join(", ") || "—"}). Проверка идёт без пропусков, просто дольше.`).catch(() => {});
+    }
   }
 
   for (const id of parsed.ids) {
@@ -442,25 +494,53 @@ async function processItem(session: SiteSession, page: Page, factionName: string
   return true;
 }
 
-/** Ждёт окно со списком персонажей: возвращает данные, как только они появились и перестали меняться. */
-async function waitForCards(page: Page, timeoutMs: number): Promise<Parsed> {
-  const deadline = Date.now() + Math.max(500, timeoutMs);
-  let last = await page.evaluate<Parsed>(PARSE_SCRIPT);
-  let lastSignature = JSON.stringify(last);
-  let stableSince = Date.now();
+function signature(p: Parsed): string {
+  return [...p.ids].sort().join(",");
+}
+
+/**
+ * Ждёт, пока в окне появятся данные НОВОГО игрока (набор ID изменился либо в нём есть ID из строки списка),
+ * и ещё немного — пока содержимое перестанет перерисовываться. null — окно не появилось за timeoutMs.
+ */
+async function waitForNewCards(page: Page, beforeSig: string, rowId: string, timeoutMs: number): Promise<Parsed | null> {
+  const deadline = Date.now() + timeoutMs;
+  let last: Parsed | null = null;
+  let lastSig = "";
+  let stableSince = 0;
   while (Date.now() < deadline) {
     await page.waitForTimeout(200);
     const now = await page.evaluate<Parsed>(PARSE_SCRIPT);
-    const signature = JSON.stringify(now);
-    if (signature !== lastSignature) {
+    if (!now.cards) continue;
+    const sig = signature(now);
+    if (!(sig !== beforeSig || (rowId && now.ids.includes(rowId)))) continue; // это ещё окно прошлого игрока
+    if (sig !== lastSig) {
       last = now;
-      lastSignature = signature;
+      lastSig = sig;
       stableSince = Date.now();
+      continue;
     }
-    if (last.pairs.length > 0) return last; // данные есть — как в расширении, не ждём дальше
-    if (last.cards > 0 && Date.now() - stableSince >= 600) return last; // карточки есть, фракций в них нет
+    if (Date.now() - stableSince >= 300) return last;
   }
   return last;
+}
+
+/** Когда окно не открывается: что сейчас в странице + скриншот — владельцу в личку. */
+async function reportUnreadDiagnostics(session: SiteSession, page: Page, io: OperatorIO): Promise<void> {
+  try {
+    const info = await page.evaluate<unknown>(DIAG_SCRIPT);
+    let shot: string | undefined;
+    try {
+      shot = `${loadSiteConfig().debugDir}/twink-nowindow-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+      await page.screenshot({ path: shot });
+    } catch {
+      shot = undefined;
+    }
+    const text = `Диагностика: после нажатия «(ч)» окно со списком персонажей не появилось.\n\`\`\`json\n${JSON.stringify(info, null, 1).slice(0, 1500)}\n\`\`\``;
+    await io.notify(text, shot);
+  } catch (err) {
+    console.error("[twink] Диагностика окна не удалась:", err);
+  }
+  void session;
 }
 
 // ---------- завершение ----------
@@ -472,17 +552,24 @@ async function finish(client: Client, run: RunState, outcome: "done" | "stopped"
   const names = run.factions.map((f) => f.name);
   const spent = fmtDuration(Date.now() - run.startedAt);
 
+  const unread = run.unread ?? 0;
+  // Если часть окон не прочиталась, «нарушений нет» было бы неправдой — честно говорим, что результат неполный.
+  const incomplete = unread > 0;
+  const bad = run.clicked > 0 && unread / run.clicked > 0.1;
   const head =
     outcome === "stopped"
       ? `⏹ **Проверка твинков остановлена** (проверено ${p.percent}%). Ниже — то, что найдено к этому моменту.`
-      : "✅ **Проверка твинков завершена**";
+      : bad
+        ? "⚠️ **Проверка твинков завершена с ошибками чтения**"
+        : "✅ **Проверка твинков завершена**";
   const perFaction = run.factions.map((f) => `• ${f.name}: ${run.findings.filter((x) => x.factionName === f.name).length}`).join("\n");
   const summary = [
     head,
     `Найдено групп с нарушением: **${run.findings.length}**`,
     perFaction,
     `Нажато «(ч)»: ${run.clicked}, пропущено повторов: ${run.skipped}. Время: ${spent}.`,
-    run.findings.length ? "" : "Нарушений не найдено.",
+    incomplete ? `⚠️ Не удалось прочитать окно у ${unread} из ${run.clicked} игроков — по ним результат неизвестен.` : "",
+    run.findings.length ? "" : incomplete ? "Среди прочитанных нарушений не найдено (результат неполный)." : "Нарушений не найдено.",
   ]
     .filter((l) => l !== "")
     .join("\n");
@@ -512,7 +599,7 @@ async function finish(client: Client, run: RunState, outcome: "done" | "stopped"
     for (const content of messages) await notifyOwner(client, content);
   }
 
-  setLastRun(`${outcome === "stopped" ? "остановлена" : "завершена"}, групп с нарушением: ${run.findings.length}, нажатий ${run.clicked}, пропущено ${run.skipped}, ${spent}`, run.kind);
+  setLastRun(`${outcome === "stopped" ? "остановлена" : "завершена"}, групп с нарушением: ${run.findings.length}, нажатий ${run.clicked}, пропущено ${run.skipped}${unread ? `, НЕ ПРОЧИТАНО ${unread}` : ""}, ${spent}`, run.kind);
   if (run.kind === "auto") markDone(run.id);
   stopRequested = false;
   seenIds.clear();
@@ -527,7 +614,7 @@ export function describeRun(): string {
   const state = { queued: "ждёт очереди на сайте", running: "идёт", paused: `на паузе (${run.pauseReason ?? "причина не указана"})`, stopping: "останавливается" }[run.status];
   const lines = [
     `**Проверка:** ${state}, ${run.kind === "auto" ? "по расписанию" : "ручная"}, старт ${hm(run.startedAt)} МСК`,
-    `**Прогресс:** ${p.percent}% (${p.done} из ${p.total || "?"}), нажато ${run.clicked}, пропущено повторов ${run.skipped}`,
+    `**Прогресс:** ${p.percent}% (${p.done} из ${p.total || "?"}), нажато ${run.clicked}, пропущено повторов ${run.skipped}${run.unread ? `, не прочитано ${run.unread}` : ""}`,
     `**Найдено групп:** ${run.findings.length}`,
   ];
   if (run.status === "running" && p.etaMs !== null) lines.push(`**Примерное окончание:** ≈ ${hm(Date.now() + p.etaMs)} МСК`);
