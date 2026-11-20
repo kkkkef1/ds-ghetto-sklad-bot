@@ -64,6 +64,8 @@ export interface Occurrence {
   prepMinutes: number;
   createdAt: number;
   announce: (MessageRef & { postedAt: number }) | null;
+  /** Версия вида анонса, в котором сообщение нарисовано в последний раз (у старых записей поля нет = 1). */
+  announceLayout?: number;
   reminderDone: boolean;
   /** Сообщение-напоминание в N1: после начала МП оно редактируется в итоги (у старых записей поля нет). */
   reminderMessage?: MessageRef | null;

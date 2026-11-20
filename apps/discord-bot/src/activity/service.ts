@@ -14,6 +14,7 @@
 import { Events, type ButtonInteraction, type Client, type GuildMember, type TextChannel } from "discord.js";
 import { isCreatorOrModerator } from "../captTracker/store.js";
 import {
+  ANNOUNCE_LAYOUT,
   adminName,
   renderAnnounce,
   renderBoard,
@@ -157,10 +158,11 @@ async function publishAnnounce(occ: Occurrence): Promise<void> {
     allowedMentions: { roles: occ.pingRoleId ? [occ.pingRoleId] : [] },
   });
   occ.announce = { channelId: channel.id, messageId: sent.id, postedAt: Date.now() };
+  occ.announceLayout = ANNOUNCE_LAYOUT;
   persist();
 }
 
-/** Перерисовывает анонс (закрытие отметки, отмена). */
+/** Перерисовывает анонс (новая отметка, перенос времени, закрытие отметки, отмена). */
 async function editAnnounce(occ: Occurrence): Promise<void> {
   if (!occ.announce) return;
   const channel = await getChannel(occ.announce.channelId);
@@ -172,8 +174,29 @@ async function editAnnounce(occ: Occurrence): Promise<void> {
       components: page.components,
       allowedMentions: { parse: [] },
     });
+    occ.announceLayout = ANNOUNCE_LAYOUT;
+    persist();
   } catch (err) {
     if (discordErrorCode(err) !== UNKNOWN_MESSAGE) throw err;
+  }
+}
+
+/**
+ * Один раз после обновления бота перерисовывает уже опубликованные анонсы с открытой отметкой в новом виде
+ * (список «Буду / Не буду» под датой). Уже нажавшие появятся сразу: их отметки и ники лежат в данных проведения.
+ */
+async function refreshAnnouncements(): Promise<void> {
+  const now = Date.now();
+  for (const occ of listOccurrences()) {
+    if (occ.canceled || occ.closed || !occ.announce || now >= occ.startAt) continue;
+    if ((occ.announceLayout ?? 1) >= ANNOUNCE_LAYOUT) continue;
+    await withLock(occ.id, async () => {
+      try {
+        await editAnnounce(occ);
+      } catch (err) {
+        console.error(`[activity] Не удалось перерисовать анонс ${occ.id} в новом виде:`, err);
+      }
+    });
   }
 }
 
@@ -403,7 +426,9 @@ async function tick(): Promise<void> {
 export function initActivity(c: Client): void {
   client = c;
   c.once(Events.ClientReady, () => {
-    void tick();
+    void refreshAnnouncements()
+      .catch((err) => console.error("[activity] Ошибка перерисовки анонсов:", err))
+      .then(() => tick());
     setInterval(() => void tick(), TICK_MS).unref();
   });
 }
@@ -430,6 +455,51 @@ export async function createMeeting(guildId: string, roleId: string, roleName: s
     throw err;
   }
   return occ;
+}
+
+export type RescheduleResult =
+  | { ok: true; oldStartAt: number; marksCount: number; announceUpdated: boolean }
+  | { ok: false; reason: "notMeeting" | "canceled" | "closed" | "past" };
+
+/**
+ * Переносит собрание на другую дату/время, не создавая нового: анонс правится на месте, отметки сохраняются.
+ * Старое напоминание (если уже было) удаляется — по новому времени бот отправит новое в своё время.
+ */
+export async function rescheduleOccurrence(occ: Occurrence, newStartAt: number): Promise<RescheduleResult> {
+  return withLock(occ.id, async (): Promise<RescheduleResult> => {
+    const now = Date.now();
+    if (occ.kind !== "meeting") return { ok: false, reason: "notMeeting" };
+    if (occ.canceled || getOccurrence(occ.id) !== occ) return { ok: false, reason: "canceled" };
+    if (occ.closed || now >= occ.startAt) return { ok: false, reason: "closed" };
+    if (newStartAt <= now) return { ok: false, reason: "past" };
+
+    const oldStartAt = occ.startAt;
+    const oldReminder = occ.reminderMessage ?? null;
+    occ.startAt = newStartAt;
+    occ.reminderMessage = null;
+    occ.reminderDone = false;
+    occ.failures = {};
+    persist();
+
+    if (oldReminder) {
+      const channel = await getChannel(oldReminder.channelId);
+      await channel?.messages.delete(oldReminder.messageId).catch(() => undefined);
+    }
+
+    let announceUpdated = true;
+    try {
+      await editAnnounce(occ);
+    } catch (err) {
+      announceUpdated = false;
+      console.error(`[activity] Не удалось обновить анонс после переноса (${occ.id}):`, err);
+    }
+    if (occ.boardMessages?.length) {
+      await syncBoard(occ, boardPages(occ)).catch((err) =>
+        console.error(`[activity] Не удалось обновить табло после переноса (${occ.id}):`, err)
+      );
+    }
+    return { ok: true, oldStartAt, marksCount: Object.keys(occ.marks).length, announceUpdated };
+  });
 }
 
 /** Отменяет проведение: анонс перерисовывается как «Отменено», кнопки пропадают. */
@@ -493,6 +563,13 @@ export async function handleMarkButton(interaction: ButtonInteraction): Promise<
     occ.names[member.id] = member.displayName;
     occ.marks[member.id] = { status, changedAt: now, messageId: null };
     persist();
+
+    // Человек всегда один раз в списке: смена выбора переносит его из «Буду» в «Не буду» и обратно.
+    try {
+      await editAnnounce(occ);
+    } catch (err) {
+      console.error(`[activity] Не удалось обновить список отметок в анонсе (${occ.id}):`, err);
+    }
 
     try {
       await publishMark(occ);

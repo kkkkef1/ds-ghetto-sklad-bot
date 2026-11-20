@@ -14,6 +14,7 @@ import * as announce from "./commands/announce.js";
 import * as mp from "./commands/mp.js";
 import * as meeting from "./commands/meeting.js";
 import * as snew from "./commands/snew.js";
+import * as sedit from "./commands/sedit.js";
 import * as sklad from "./commands/sklad.js";
 import * as twink from "./commands/twink.js";
 import { initTwink } from "./twink/scheduler.js";
@@ -35,6 +36,7 @@ const commands = new Map<string, Command>([
   [mp.data.name, mp],
   [meeting.data.name, meeting],
   [snew.data.name, snew],
+  [sedit.data.name, sedit],
   [sklad.data.name, sklad],
   [twink.data.name, twink],
 ]);
@@ -73,6 +75,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       [captAdmin.data.name]: captAdmin.autocomplete,
       [mp.data.name]: mp.autocomplete,
       [meeting.data.name]: meeting.autocomplete,
+      [sedit.data.name]: sedit.autocomplete,
       [sklad.data.name]: sklad.autocomplete,
     };
     const handler = autocompleters[interaction.commandName];

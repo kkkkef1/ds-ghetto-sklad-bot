@@ -1,6 +1,6 @@
 // ===================== ТЕКСТЫ И КНОПКИ =====================
 
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, escapeMarkdown } from "discord.js";
 import type { Occurrence } from "./store.js";
 import { addDaysToKey, formatDateTime, mskDateKey } from "./time.js";
 
@@ -65,6 +65,49 @@ function sortedAdminIds(occ: Occurrence): string[] {
 
 // ---- анонс в N1 ----
 
+/**
+ * Версия вида анонса. Когда она растёт, бот при запуске один раз перерисовывает уже опубликованные
+ * анонсы (см. refreshAnnouncements в service.ts). v2: под датой показывается список «Буду / Не буду».
+ */
+export const ANNOUNCE_LAYOUT = 2;
+
+/** Сколько символов отводим под список отметок в анонсе (лимит сообщения Discord — 2000). */
+const MARKS_BUDGET = 1200;
+
+/** Ник для вывода в анонсе: без разметки Markdown и без рабочих упоминаний. */
+function safeName(occ: Occurrence, userId: string): string {
+  return escapeMarkdown(adminName(occ, userId))
+    .replace(/\s+/g, " ")
+    .replace(/@/g, "@\u200b");
+}
+
+/**
+ * Список отметок под датой, цитатой (вертикальная черта слева):
+ *   > ✅ Ivan Petrov
+ *   > ❌ Sam Ford
+ * Сначала «Буду», потом «Не буду», внутри группы — по времени нажатия (сменил выбор — оказался в конце другой группы).
+ * Пустая группа не показывается. Когда отметка закрыта или никто не нажал — пусто. В конце — пустая строка-отступ.
+ */
+function marksBlock(occ: Occurrence): string[] {
+  if (occ.closed) return [];
+  const ids = Object.keys(occ.marks).sort((a, b) => occ.marks[a].changedAt - occ.marks[b].changedAt);
+  const rows = [
+    ...ids.filter((id) => occ.marks[id].status === "yes").map((id) => `> ✅ ${safeName(occ, id)}`),
+    ...ids.filter((id) => occ.marks[id].status === "no").map((id) => `> ❌ ${safeName(occ, id)}`),
+  ];
+  if (!rows.length) return [];
+
+  const shown: string[] = [];
+  let size = 0;
+  for (const row of rows) {
+    if (size + row.length + 1 > MARKS_BUDGET) break;
+    shown.push(row);
+    size += row.length + 1;
+  }
+  if (shown.length < rows.length) shown.push(`> … и ещё ${rows.length - shown.length}`);
+  return [...shown, ""];
+}
+
 export function renderAnnounce(occ: Occurrence): Page {
   if (occ.canceled) {
     return {
@@ -80,6 +123,7 @@ export function renderAnnounce(occ: Occurrence): Page {
     `Начало: **${whenText(occ.startAt, occ.announce?.postedAt ?? Date.now())}** (МСК)`,
     `В игре нужно быть за **${minutesText(occ.prepMinutes)}** до начала.`,
     "",
+    ...marksBlock(occ),
     occ.closed ? "**Отметка закрыта**" : "**Кто будет?**",
   ];
   return { content: ping + frame(...lines), components: [markRow(occ)] };
@@ -91,6 +135,7 @@ function renderMeetingAnnounce(occ: Occurrence): Page {
     `**Собрание** ${role}`,
     `Дата: **${formatDateTime(occ.startAt)}** (МСК)`,
     "",
+    ...marksBlock(occ),
     occ.closed ? "**Отметка закрыта**" : "**Кто будет?**",
   ];
   return { content: frame(...lines), components: [markRow(occ)] };
