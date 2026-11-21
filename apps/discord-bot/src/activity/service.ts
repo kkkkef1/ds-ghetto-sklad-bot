@@ -213,7 +213,11 @@ async function sendReminder(occ: Occurrence): Promise<void> {
   persist();
 }
 
-/** Составляет список админов для проверки присутствия: носители админских ролей + все, кто отмечался. */
+/**
+ * Составляет список админов для проверки присутствия: носители админских ролей + все, кто отмечался.
+ * Для собраний список уже: только админы, у которых есть роль этого собрания (та, что пингует анонс),
+ * плюс все, кто отметился. Основные МП — по-прежнему все админы.
+ */
 async function ensureSnapshot(occ: Occurrence): Promise<void> {
   if (occ.adminIds) return;
   if (!client) throw new Error("клиент Discord не готов");
@@ -228,9 +232,12 @@ async function ensureSnapshot(occ: Occurrence): Promise<void> {
   }
 
   const ids = new Set<string>(Object.keys(occ.marks));
+  const meetingRoleId = occ.kind === "meeting" ? occ.pingRoleId : null;
   for (const member of guild.members.cache.values()) {
     if (member.user.bot) continue;
-    if (settings.adminRoleIds.some((roleId) => member.roles.cache.has(roleId))) ids.add(member.id);
+    if (!settings.adminRoleIds.some((roleId) => member.roles.cache.has(roleId))) continue;
+    if (meetingRoleId && !member.roles.cache.has(meetingRoleId)) continue;
+    ids.add(member.id);
   }
   for (const id of ids) {
     const member = guild.members.cache.get(id);

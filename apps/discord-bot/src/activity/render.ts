@@ -225,7 +225,15 @@ export function renderReportPages(occ: Occurrence, seniorRoleId: string | null, 
   if (!ids.length) {
     return [
       {
-        content: ping + frame(...reportHeader(occ), "", "Список админов пуст — проверьте роли админов в настройках сервера."),
+        content:
+          ping +
+          frame(
+            ...reportHeader(occ),
+            "",
+            occ.kind === "meeting"
+              ? "Список пуст: среди админов нет носителей роли собрания, и никто не отметился «Буду»."
+              : "Список админов пуст — проверьте роли админов в настройках сервера."
+          ),
         components: [],
       },
     ];
