@@ -15,10 +15,12 @@ import * as mp from "./commands/mp.js";
 import * as meeting from "./commands/meeting.js";
 import * as snew from "./commands/snew.js";
 import * as sedit from "./commands/sedit.js";
+import * as lcheck from "./commands/lcheck.js";
 import * as sklad from "./commands/sklad.js";
 import * as twink from "./commands/twink.js";
 import { initTwink } from "./twink/scheduler.js";
 import { initWarehouse } from "./warehouse/scheduler.js";
+import { initLogCheck } from "./logcheck/scheduler.js";
 import { CONFIRM_PREFIX, MARK_PREFIX } from "./activity/render.js";
 import { handleConfirmButton, handleMarkButton, initActivity } from "./activity/service.js";
 import { CANCEL_BUTTON_PREFIX, handleCancelButton, initCaptTracker } from "./captTracker/index.js";
@@ -37,6 +39,7 @@ const commands = new Map<string, Command>([
   [meeting.data.name, meeting],
   [snew.data.name, snew],
   [sedit.data.name, sedit],
+  [lcheck.data.name, lcheck],
   [sklad.data.name, sklad],
   [twink.data.name, twink],
 ]);
@@ -76,6 +79,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       [mp.data.name]: mp.autocomplete,
       [meeting.data.name]: meeting.autocomplete,
       [sedit.data.name]: sedit.autocomplete,
+      [lcheck.data.name]: lcheck.autocomplete,
       [sklad.data.name]: sklad.autocomplete,
     };
     const handler = autocompleters[interaction.commandName];
@@ -152,6 +156,8 @@ initActivity(client);
 initWarehouse(client);
 // Проверка твинков: по средам и воскресеньям готовит результат к 09:00 МСК, использует тот же аккаунт и очередь, что и склад.
 initTwink(client);
+// Проверка логов за сутки (ПВП-участие, оскорбления в причинах): раз в сутки после полуночи по МСК, тот же аккаунт и очередь.
+initLogCheck(client);
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {

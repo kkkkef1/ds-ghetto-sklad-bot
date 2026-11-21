@@ -7,6 +7,7 @@
 // отчёт придёт «из прошлого», и в нём уже нет смысла).
 
 import type { Client, TextBasedChannel } from "discord.js";
+import { startDiskCleanup } from "./cleanup.js";
 import { ClientIO } from "./discordIO.js";
 import { listenForLimitReplies } from "./newItems.js";
 import { lastCompletedPeriod, type Period } from "./periods.js";
@@ -99,5 +100,6 @@ async function tick(client: Client): Promise<void> {
 /** Подключает расписание к уже запущенному клиенту. Вызывать один раз. */
 export function initWarehouse(client: Client): void {
   listenForLimitReplies(client, ownerId);
+  startDiskCleanup(); // старые скриншоты сбоев и кэш браузера, чтобы диск не забивался
   setInterval(() => void tick(client).catch((e) => console.error("[warehouse] tick:", e)), TICK_MS).unref();
 }

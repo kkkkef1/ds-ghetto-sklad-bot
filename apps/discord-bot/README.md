@@ -152,7 +152,7 @@ pnpm --filter @workspace/discord-bot run start   # прод-запуск соб�
 | --- | --- |
 | Все, на любом сервере | `/capt summary`, `/meeting list`, `/sliv`, `/stopsliv` (свою сессию) |
 | Админы сервера (право «Управление сервером» или роли админов из `/mp setup`) | `/meeting register|cancel`, `/snew`, `/sedit` — только на своём сервере |
-| Модераторы | всё то же на любом сервере бота, плюс все команды МП (`/mp settings|setup|add|edit|skip|move|remove`) и серьёзные настройки: `/capt settings|server|source|counter`, `/announce`, закрытие чужих сессий `/stopsliv`, кнопки «был / не был» |
+| Модераторы | всё то же на любом сервере бота, плюс все команды МП (`/mp settings|setup|add|edit|skip|move|remove`) и серьёзные настройки: `/capt settings|server|source|counter`, `/announce`, `/lcheck` (сводка по логам за сутки, см. `src/logcheck/README.md`), закрытие чужих сессий `/stopsliv`, кнопки «был / не был» |
 | Создатель | всё, плюс `/capt moderator` (список модераторов) |
 
 ## МП (`/mp`) и собрания (`/meeting`)
