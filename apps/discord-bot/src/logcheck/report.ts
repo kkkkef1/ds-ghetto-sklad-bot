@@ -1,8 +1,8 @@
 // ===================== ТЕКСТ СВОДКИ =====================
 //
-//   Сводка за 20.11.2026 с 00:00 по 23:59
+//   **Сводка за 20.11.2026 с 00:00 по 23:59**
 //
-//   *Участие в ПВП-мероприятиях (война за ресурсы):*
+//   **Участие в ПВП-мероприятиях (война за ресурсы):**
 //   > Bloods ........ 14
 //
 //   *Действия требующие внимания:*
@@ -61,7 +61,7 @@ function dotted(name: string, width: number, value: string): string {
 }
 
 function pvpSections(results: FactionResult[]): string[] {
-  const header = (event?: string) => `*Участие в ПВП-мероприятиях${event ? ` (${event})` : ""}:*`;
+  const header = (event?: string) => `**Участие в ПВП-мероприятиях${event ? ` (${event})` : ""}:**`;
   const events = [...new Set(results.flatMap((r) => [...r.pvp.keys()]))].sort((a, b) => a.localeCompare(b, "ru"));
   if (!events.length) {
     const failed = results.filter((r) => r.error).map((r) => r.name);
@@ -117,11 +117,11 @@ function attentionBlocks(r: FactionResult): string[] {
 /** Сообщения сводки за сутки dateKey («2026-11-20»), каждое не длиннее лимита Discord. */
 export function buildSummary(dateKey: string, results: FactionResult[]): string[] {
   const parts: { text: string; sep: string }[] = [];
-  parts.push({ text: `Сводка за ${formatDateKey(dateKey)} с 00:00 по 23:59`, sep: "" });
+  parts.push({ text: `**Сводка за ${formatDateKey(dateKey)} с 00:00 по 23:59**`, sep: "" });
   for (const section of pvpSections(results)) parts.push({ text: section, sep: "\n\n" });
 
   const attention = results.flatMap(attentionBlocks);
-  parts.push({ text: `*Действия требующие внимания:*`, sep: "\n\n" });
+  parts.push({ text: `**Действия требующие внимания:**`, sep: "\n\n" });
   for (const block of attention) parts.push({ text: block, sep: "\n" });
 
   const messages: string[] = [];
