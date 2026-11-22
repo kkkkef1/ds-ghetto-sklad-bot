@@ -5,6 +5,7 @@ import {
   type ChatInputCommandInteraction,
   type Guild,
 } from "discord.js";
+import { confirmAction, respond } from "../confirm.js";
 import { isCreatorOrModerator } from "../access.js";
 import { cancelOccurrence, startTimesFor } from "../activity/service.js";
 import {
@@ -497,10 +498,11 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   }
 
   if (sub === "remove") {
+    if (!(await confirmAction(interaction, `**Удалить МП «${event.name}» (${guildName}) насовсем?**\nПредстоящие анонсы этого МП будут отменены. Вернуть удалённое МП нельзя, только создать заново.`))) return;
     event.enabled = false;
     const canceled = await cancelStale(event.id);
     removeEvent(event.id);
-    await reply(`МП «${event.name}» (${guildName}) удалено.` + (canceled ? ` Отменено предстоящих анонсов: ${canceled}.` : ""));
+    await respond(interaction, `МП «${event.name}» (${guildName}) удалено.` + (canceled ? ` Отменено предстоящих анонсов: ${canceled}.` : ""));
     return;
   }
 }

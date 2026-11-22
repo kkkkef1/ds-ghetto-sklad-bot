@@ -7,6 +7,7 @@ import {
   type Client,
   type Guild,
 } from "discord.js";
+import { confirmAction, respond } from "../confirm.js";
 import { CREATOR_ID, DAILY_ATTACK_DEFENSE_LIMIT, MAIN_GUILD_ID } from "../captTracker/config.js";
 import { dayKeyFromDate, dayKeyFromDateString } from "../captTracker/parser.js";
 import { buildSummaryContent } from "../captTracker/render.js";
@@ -173,8 +174,11 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     const remove = interaction.options.getBoolean("remove") ?? false;
 
     if (remove) {
+      const serverName = interaction.client.guilds.cache.get(guildId)?.name ?? guildId;
+      if (!(await confirmAction(interaction, `**Перестать слать сообщения о каптах на сервер «${serverName}»?**\nНастройки канала и роли этого сервера будут удалены.`))) return;
       const removed = removeDestination(guildId);
-      await reply(
+      await respond(
+        interaction,
         removed
           ? "Готово: на этот сервер бот больше не шлёт сообщения о каптах."
           : "Этот сервер не был в списке получателей."
@@ -275,8 +279,9 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     }
 
     if (interaction.options.getBoolean("reset")) {
+      if (!(await confirmAction(interaction, `**Сбросить счётчик каптов за ${dayKey} у всех фракций?**\nЗначения атак и защит за этот день обнулятся.`))) return;
       resetDay(dayKey);
-      await reply(`Счётчик каптов за ${dayKey} сброшен.`);
+      await respond(interaction, `Счётчик каптов за ${dayKey} сброшен.`);
       return;
     }
 

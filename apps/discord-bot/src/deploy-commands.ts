@@ -9,6 +9,8 @@ import * as meeting from "./commands/meeting.js";
 import * as snew from "./commands/snew.js";
 import * as sedit from "./commands/sedit.js";
 import * as lcheck from "./commands/lcheck.js";
+import * as remind from "./commands/remind.js";
+import * as help from "./commands/help.js";
 import * as sklad from "./commands/sklad.js";
 import * as twink from "./commands/twink.js";
 
@@ -22,6 +24,8 @@ const commands = [
   snew.data.toJSON(),
   sedit.data.toJSON(),
   lcheck.data.toJSON(),
+  remind.data.toJSON(),
+  help.data.toJSON(),
   sklad.data.toJSON(),
   twink.data.toJSON(),
 ];

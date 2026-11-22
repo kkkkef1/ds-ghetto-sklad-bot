@@ -5,8 +5,9 @@
 // счётчика каптов и МП. Бот работает одним процессом, поэтому достаточно схемы
 // «загрузили в память → правим → сохраняем».
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { hasStoreFile, readStoreFile, registerStoreFile, writeStoreFile } from "../storage.js";
 
 export interface Rule {
   /** Короткий идентификатор (латиница), по нему правило выбирается в командах. */
@@ -185,12 +186,13 @@ function normalizeSchedule(value: unknown): number[] | null {
 }
 
 const DATA_FILE = process.env.WH_STORE_FILE || `${process.cwd()}/data/warehouse-store.json`;
+registerStoreFile(DATA_FILE);
 
 function load(): StoreData {
   const base = emptyStore();
   try {
-    if (existsSync(DATA_FILE)) {
-      const raw = JSON.parse(readFileSync(DATA_FILE, "utf-8")) as Partial<StoreData>;
+    if (hasStoreFile(DATA_FILE)) {
+      const raw = JSON.parse(readStoreFile(DATA_FILE)) as Partial<StoreData>;
       return {
         guildId: typeof raw.guildId === "string" ? raw.guildId : base.guildId,
         channelId: typeof raw.channelId === "string" ? raw.channelId : base.channelId,
@@ -232,7 +234,7 @@ function persist(): void {
     saveScheduled = false;
     try {
       mkdirSync(dirname(DATA_FILE), { recursive: true });
-      writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), "utf-8");
+      writeStoreFile(DATA_FILE, JSON.stringify(data, null, 2));
     } catch (err) {
       console.error("[warehouse] Не удалось сохранить файл настроек:", err);
     }

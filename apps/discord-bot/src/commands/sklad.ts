@@ -8,6 +8,7 @@ const FORCE_MAX_HOURS = 24;
 const FORCE_MIN_MS = 2 * 60_000;
 const DATE_CHECK_MAX_HOURS = 72;
 
+import { confirmAction, respond } from "../confirm.js";
 import {
   ChannelType,
   PermissionFlagsBits,
@@ -359,8 +360,9 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       return void (await reply(["**Пороги за период:**", ...getRules().map(describeRule)].join("\n").slice(0, 1990)));
     }
     if (sub === "reset") {
+      if (!(await confirmAction(interaction, "**Вернуть все пороги склада к значениям по умолчанию?**\nВсе ваши изменения порогов и добавленные правила пропадут."))) return;
       resetRules();
-      return void (await reply("Все пороги возвращены к значениям по умолчанию."));
+      return void (await respond(interaction, "Все пороги возвращены к значениям по умолчанию."));
     }
     if (sub === "set") {
       const id = interaction.options.getString("rule", true);

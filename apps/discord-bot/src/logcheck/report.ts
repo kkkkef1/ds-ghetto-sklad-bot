@@ -24,6 +24,8 @@ export interface Finding {
 }
 
 export interface FactionResult {
+  /** Код фракции на сайте (F_GANG_BLOODS…): по нему копится история для недельной сводки. */
+  code: string;
   /** Короткое имя для сводки: Bloods, Families, Marabunta. */
   name: string;
   /** Фракцию прочитать не удалось: причина (в канал она не идёт, только пометка «не удалось проверить»). */
@@ -55,7 +57,7 @@ export function shortFactionName(code: string, fallback: string): string {
   return SHORT_NAMES[code] ?? fallback;
 }
 
-function dotted(name: string, width: number, value: string): string {
+export function dotted(name: string, width: number, value: string): string {
   const dots = ".".repeat(Math.max(3, width - name.length));
   return `${name} ${dots} ${value}`;
 }
@@ -124,6 +126,11 @@ export function buildSummary(dateKey: string, results: FactionResult[]): string[
   parts.push({ text: `**Действия требующие внимания:**`, sep: "\n\n" });
   for (const block of attention) parts.push({ text: block, sep: "\n" });
 
+  return chunkParts(parts);
+}
+
+/** Склеивает части в сообщения не длиннее лимита Discord; часть никогда не рвётся посередине. */
+export function chunkParts(parts: { text: string; sep: string }[]): string[] {
   const messages: string[] = [];
   let current = "";
   for (const part of parts) {

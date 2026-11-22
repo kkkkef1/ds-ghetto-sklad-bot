@@ -9,9 +9,10 @@
 // process, so a simple "load once, mutate in memory, debounce-save" model
 // is enough.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { CREATOR_ID, DEFAULT_SOURCE_CHANNEL_ID, INITIAL_DESTINATIONS, type CaptDestination } from "./config.js";
+import { hasStoreFile, readStoreFile, registerStoreFile, writeStoreFile } from "../storage.js";
 
 export interface FactionDayCounts {
   attacks: number;
@@ -55,6 +56,7 @@ interface StoreData {
 }
 
 const DATA_FILE = process.env.CAPT_DATA_FILE || `${process.cwd()}/data/capt-store.json`;
+registerStoreFile(DATA_FILE);
 
 function initialDestinations(legacyPingRoles: Record<string, string> = {}): Record<string, DestinationSettings> {
   const result: Record<string, DestinationSettings> = {};
@@ -79,8 +81,8 @@ let migrated = false;
 
 function load(): StoreData {
   try {
-    if (existsSync(DATA_FILE)) {
-      const raw = readFileSync(DATA_FILE, "utf-8");
+    if (hasStoreFile(DATA_FILE)) {
+      const raw = readStoreFile(DATA_FILE);
       const parsed = JSON.parse(raw);
       const hasDestinations = parsed.destinations && typeof parsed.destinations === "object";
       // Старый формат: каналы были в config.ts, а в файле лежал только pingRoles —
@@ -112,7 +114,7 @@ function persist() {
     saveScheduled = false;
     try {
       mkdirSync(dirname(DATA_FILE), { recursive: true });
-      writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), "utf-8");
+      writeStoreFile(DATA_FILE, JSON.stringify(data, null, 2));
     } catch (err) {
       console.error("[captTracker] Не удалось сохранить файл данных:", err);
     }

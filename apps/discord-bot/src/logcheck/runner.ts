@@ -43,7 +43,7 @@ export interface LogCheckResult {
 }
 
 /** Номер сборки модуля: видно в /lcheck status, какой код запущен. */
-export const LC_BUILD_ID = "2026-11-21.r1";
+export const LC_BUILD_ID = "2026-11-22.r2";
 
 let running = false;
 export const isLogCheckRunning = (): boolean => running;
@@ -75,6 +75,7 @@ async function runLocked(day: DayWindow, io: OperatorIO, opts: { onlyFactions?: 
 
     for (const faction of factions) {
       const result: FactionResult = {
+        code: faction.code,
         name: shortFactionName(faction.code, faction.name),
         incomplete: false,
         rowsRead: 0,

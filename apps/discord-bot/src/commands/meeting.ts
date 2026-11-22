@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, type AutocompleteInteraction, type ChatInputCommandInteraction } from "discord.js";
 import { canManageServer } from "../access.js";
+import { confirmAction, respond } from "../confirm.js";
 import { cancelOccurrence, createMeeting } from "../activity/service.js";
 import { getGuildSettings, getOccurrence, listOccurrences } from "../activity/store.js";
 import { formatDateTime, mskToUtcMs, parseDateInput, parseTime } from "../activity/time.js";
@@ -85,11 +86,9 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       await interaction.reply({ content: "Такого собрания нет. Выберите его из подсказок.", ephemeral: true });
       return;
     }
-    await interaction.deferReply({ ephemeral: true });
+    if (!(await confirmAction(interaction, `**Отменить собрание ${occ.title} (${formatDateTime(occ.startAt)} МСК)?**\nАнонс будет помечен как отменённый, кнопки пропадут. Отметки людей сохранятся только в этом анонсе.`))) return;
     await cancelOccurrence(occ);
-    await interaction.editReply({
-      content: `Собрание ${occ.title} (${formatDateTime(occ.startAt)}) отменено, анонс помечен как отменённый.`,
-    });
+    await respond(interaction, `Собрание ${occ.title} (${formatDateTime(occ.startAt)}) отменено, анонс помечен как отменённый.`);
     return;
   }
 

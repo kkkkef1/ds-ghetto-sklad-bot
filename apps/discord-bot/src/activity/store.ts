@@ -5,8 +5,9 @@
 // на месте, сохраняем отложенно. Бот работает одним процессом.
 
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { hasStoreFile, readStoreFile, registerStoreFile, writeStoreFile } from "../storage.js";
 
 export interface GuildSettings {
   guildId: string;
@@ -66,6 +67,8 @@ export interface Occurrence {
   announce: (MessageRef & { postedAt: number }) | null;
   /** Версия вида анонса, в котором сообщение нарисовано в последний раз (у старых записей поля нет = 1). */
   announceLayout?: number;
+  /** Личные напоминания в ЛС («Буду», за 15 минут до начала) уже обработаны. */
+  dmRemindDone?: boolean;
   reminderDone: boolean;
   /** Сообщение-напоминание в N1: после начала МП оно редактируется в итоги (у старых записей поля нет). */
   reminderMessage?: MessageRef | null;
@@ -98,28 +101,37 @@ export interface Occurrence {
   failures: Record<string, number>;
 }
 
+/** Настройки личных напоминаний человека: off — отключил; noticed — уже получал первое сообщение с подсказкой про команду. */
+export interface ReminderPref {
+  off?: boolean;
+  noticed?: boolean;
+}
+
 interface StoreData {
   guilds: Record<string, GuildSettings>;
   events: Record<string, ActivityEvent>;
   occurrences: Record<string, Occurrence>;
+  reminderPrefs: Record<string, ReminderPref>;
 }
 
 const DATA_FILE = process.env.ACTIVITY_DATA_FILE || `${process.cwd()}/data/activity-store.json`;
+registerStoreFile(DATA_FILE);
 
 function load(): StoreData {
   try {
-    if (existsSync(DATA_FILE)) {
-      const parsed = JSON.parse(readFileSync(DATA_FILE, "utf-8"));
+    if (hasStoreFile(DATA_FILE)) {
+      const parsed = JSON.parse(readStoreFile(DATA_FILE));
       return {
         guilds: parsed.guilds ?? {},
         events: parsed.events ?? {},
         occurrences: parsed.occurrences ?? {},
+        reminderPrefs: parsed.reminderPrefs ?? {},
       };
     }
   } catch (err) {
     console.error("[activity] Не удалось прочитать файл данных, начинаю с чистого состояния:", err);
   }
-  return { guilds: {}, events: {}, occurrences: {} };
+  return { guilds: {}, events: {}, occurrences: {}, reminderPrefs: {} };
 }
 
 const data: StoreData = load();
@@ -132,7 +144,7 @@ export function persist(): void {
     saveScheduled = false;
     try {
       mkdirSync(dirname(DATA_FILE), { recursive: true });
-      writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), "utf-8");
+      writeStoreFile(DATA_FILE, JSON.stringify(data, null, 2));
     } catch (err) {
       console.error("[activity] Не удалось сохранить файл данных:", err);
     }
@@ -245,4 +257,19 @@ export function pruneOccurrences(now: number, keepDays = 14): void {
     }
   }
   if (changed) persist();
+}
+
+// ---- личные напоминания в ЛС ----
+
+export const isReminderOff = (userId: string): boolean => data.reminderPrefs[userId]?.off === true;
+export const wasReminderNoticed = (userId: string): boolean => data.reminderPrefs[userId]?.noticed === true;
+
+export function setReminderOff(userId: string, off: boolean): void {
+  data.reminderPrefs[userId] = { ...data.reminderPrefs[userId], off };
+  persist();
+}
+
+export function markReminderNoticed(userId: string): void {
+  data.reminderPrefs[userId] = { ...data.reminderPrefs[userId], noticed: true };
+  persist();
 }

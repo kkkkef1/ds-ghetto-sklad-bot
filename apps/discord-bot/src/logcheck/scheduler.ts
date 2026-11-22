@@ -10,8 +10,10 @@ import type { Client, TextBasedChannel } from "discord.js";
 import { addDaysToKey, mskDateKey, mskToUtcMs } from "../activity/time.js";
 import { ClientIO } from "../warehouse/discordIO.js";
 import { ownerId } from "../warehouse/scheduler.js";
+import { getFactions } from "../warehouse/store.js";
 import { isLogCheckRunning, runLogCheck, summarize, windowForDate, type LogCheckResult } from "./runner.js";
-import { getSettings, isDayDone, markDayDone, setLastRunSummary } from "./store.js";
+import { getHistory, getSettings, hasDayStats, isDayDone, isWeekDone, markDayDone, markWeekDone, recordDayStats, setLastRunSummary } from "./store.js";
+import { buildWeekly, mondayOf, type WeeklyResult } from "./weekly.js";
 
 const TICK_MS = 60_000;
 const RETRY_AFTER_MIN = 20;
@@ -55,6 +57,8 @@ export interface DayRunOutcome {
 export async function runDay(client: Client, dateKey: string, io: ClientIO, opts: { post: boolean; onlyFactions?: string[] }): Promise<DayRunOutcome> {
   console.log(`[logcheck] Запускаю проверку суток ${dateKey}.`);
   const result = await runLogCheck(windowForDate(dateKey), io, { onlyFactions: opts.onlyFactions });
+  // Итоги ПВП за сутки запоминаем (только счётчики) для недельной сводки; сами логи нигде не хранятся.
+  recordDayStats(dateKey, result.results);
   console.log(`[logcheck] Сутки ${dateKey} прочитаны: ${summarize(result).replace(/\n/g, " | ")}`);
 
   // Все фракции дали ошибку (например, сайт ничего не вернул): не закрываем сутки, расписание повторит попытку.
@@ -111,7 +115,62 @@ async function tick(client: Client): Promise<void> {
   for (const key of attempts.keys()) if (key < addDaysToKey(dateKey, -3)) attempts.delete(key);
 }
 
+// ---------------- недельная сводка: понедельник 00:30 МСК ----------------
+
+const WEEKLY_AT = "00:30";
+/** Если дневная проверка за воскресенье к этому часу понедельника так и не прошла, сводка уходит без неё (с пометкой о пробеле). */
+const WEEKLY_WAIT_UNTIL = "06:00";
+const weeklyAttempts = new Map<string, { count: number; nextAt: number }>();
+
+/** Недельная сводка за неделю, начинающуюся в понедельник weekStart, из накопленных дневных итогов (на сайт не ходит). */
+export function buildWeeklyFor(weekStart: string): WeeklyResult | null {
+  const factions = getFactions().map((f) => ({ code: f.code, name: f.name }));
+  if (!factions.length) return null;
+  return buildWeekly(weekStart, getHistory(), factions);
+}
+
+/** Отправляет недельную сводку в канал и засчитывает неделю. Вызывается расписанием и /lcheck week post:true. */
+export async function runWeek(client: Client, weekStart: string): Promise<WeeklyResult> {
+  const weekly = buildWeeklyFor(weekStart);
+  if (!weekly) throw new Error("не выбрано ни одной фракции (/sklad faction add)");
+  const delivered = await postSummary(client, `week:${weekStart}`, weekly.messages);
+  if (!delivered) throw new Error("канал сводки недоступен (/lcheck channel)");
+  markWeekDone(weekStart);
+  return weekly;
+}
+
+async function weeklyTick(client: Client): Promise<void> {
+  const s = getSettings();
+  if (!s.weeklyEnabled || !s.channelId) return;
+  const now = Date.now();
+  const thisMonday = mondayOf(mskDateKey(now));
+  if (now < mskToUtcMs(thisMonday, WEEKLY_AT)) return;
+  const weekStart = addDaysToKey(thisMonday, -7);
+  if (isWeekDone(weekStart)) return;
+  // Ждём итогов за воскресенье: их даёт дневная проверка в 00:10 (если она ещё в очереди или идёт).
+  if (!hasDayStats(addDaysToKey(weekStart, 6)) && now < mskToUtcMs(thisMonday, WEEKLY_WAIT_UNTIL)) return;
+
+  const state = weeklyAttempts.get(weekStart) ?? { count: 0, nextAt: 0 };
+  if (state.count >= MAX_ATTEMPTS || now < state.nextAt) return;
+  state.count += 1;
+  state.nextAt = now + RETRY_AFTER_MIN * 60_000;
+  weeklyAttempts.set(weekStart, state);
+  try {
+    await runWeek(client, weekStart);
+    console.log(`[logcheck] Недельная сводка за неделю с ${weekStart} отправлена.`);
+  } catch (err) {
+    console.error(`[logcheck] Недельная сводка за ${weekStart} не отправлена (попытка ${state.count}/${MAX_ATTEMPTS}):`, err);
+    if (state.count >= MAX_ATTEMPTS) {
+      const owner = ownerId();
+      if (owner) await new ClientIO(client, owner).notify(`Недельная сводка по ПВП за неделю с ${weekStart} не отправилась ${MAX_ATTEMPTS} раза подряд. Отправить вручную: /lcheck week post:true.`);
+    }
+  }
+}
+
 /** Подключает расписание к уже запущенному клиенту. Вызывать один раз. */
 export function initLogCheck(client: Client): void {
-  setInterval(() => void tick(client).catch((e) => console.error("[logcheck] tick:", e)), TICK_MS).unref();
+  setInterval(() => {
+    void tick(client).catch((e) => console.error("[logcheck] tick:", e));
+    void weeklyTick(client).catch((e) => console.error("[logcheck] weekly tick:", e));
+  }, TICK_MS).unref();
 }

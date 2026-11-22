@@ -5,9 +5,10 @@
 // Состояние идущей проверки (что уже проверено, что найдено) тоже лежит здесь, поэтому
 // после перезапуска бота проверка продолжается с того места, где остановилась.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { CustomFactions } from "./rules.js";
+import { hasStoreFile, readStoreFile, registerStoreFile, writeStoreFile } from "../storage.js";
 
 /** Меньше 4000 мс пауза быть не может (требование владельца). */
 export const MIN_DELAY_MS = 4000;
@@ -128,12 +129,13 @@ function emptyStore(): StoreData {
 }
 
 const DATA_FILE = process.env.TWINK_STORE_FILE || `${process.cwd()}/data/twink-store.json`;
+registerStoreFile(DATA_FILE);
 
 function load(): StoreData {
   const base = emptyStore();
   try {
-    if (existsSync(DATA_FILE)) {
-      const raw = JSON.parse(readFileSync(DATA_FILE, "utf-8")) as Partial<StoreData>;
+    if (hasStoreFile(DATA_FILE)) {
+      const raw = JSON.parse(readStoreFile(DATA_FILE)) as Partial<StoreData>;
       // Старое значение по умолчанию (1200 мс) было слишком коротким для медленного ответа сайта: бот не успевал
       // увидеть окно и принимал это за «нарушений нет». Заменяем его на новое; осознанно заданные значения не трогаем.
       const waitModalMs = raw.waitModalMs === undefined || raw.waitModalMs === 1200 ? base.waitModalMs : raw.waitModalMs;
@@ -155,7 +157,7 @@ export function persist(): void {
     saveScheduled = false;
     try {
       mkdirSync(dirname(DATA_FILE), { recursive: true });
-      writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), "utf-8");
+      writeStoreFile(DATA_FILE, JSON.stringify(data, null, 2));
     } catch (err) {
       console.error("[twink] Не удалось сохранить файл настроек:", err);
     }

@@ -11,7 +11,7 @@
 //   5. итоги в N1: как только старший подтвердил всех, либо через час после
 //      начала (тогда неподтверждённые помечены, а сообщение дальше редактируется).
 
-import { Events, type ButtonInteraction, type Client, type GuildMember, type TextChannel } from "discord.js";
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Events, type ButtonInteraction, type Client, type GuildMember, type TextChannel } from "discord.js";
 import { isCreatorOrModerator } from "../captTracker/store.js";
 import {
   ANNOUNCE_LAYOUT,
@@ -39,11 +39,18 @@ import {
   type GuildSettings,
   type MessageRef,
   type Occurrence,
+  isReminderOff,
+  markReminderNoticed,
+  wasReminderNoticed,
 } from "./store.js";
-import { addDaysToKey, mskDateKey, mskToUtcMs, MINUTE_MS, weekdayOfKey } from "./time.js";
+import { addDaysToKey, formatDateTime, mskDateKey, mskToUtcMs, MINUTE_MS, weekdayOfKey } from "./time.js";
 
 const TICK_MS = 20_000;
 const REMINDER_BEFORE_MS = 30 * MINUTE_MS;
+/** За сколько минут до начала бот пишет в ЛС тем, кто нажал «Буду». */
+const DM_REMIND_BEFORE_MS = 15 * MINUTE_MS;
+/** Id кнопки «Отключить напоминания» в личном сообщении. */
+export const REMIND_OFF_BUTTON_ID = "remind:off";
 const REPORT_AFTER_MS = 0; // сообщение старшему уходит сразу после начала
 const SUMMARY_AFTER_MS = 60 * MINUTE_MS;
 /** Через сколько после полной отметки старшим кнопки «был / не был» отключаются. */
@@ -304,6 +311,50 @@ async function tryStage(occ: Occurrence, stage: string, fn: () => Promise<void>)
   }
 }
 
+/**
+ * Личные напоминания в ЛС тем, кто на момент «за 15 минут» отмечен «Буду» (кроме отключивших напоминания).
+ * В самом первом сообщении человеку добавляется подсказка, как отключить напоминания; кнопка отключения есть в каждом.
+ */
+async function sendPersonalReminders(occ: Occurrence): Promise<void> {
+  if (!client) return;
+  const link = occ.announce ? `https://discord.com/channels/${occ.guildId}/${occ.announce.channelId}/${occ.announce.messageId}` : null;
+  const title = occ.kind === "meeting" ? `Собрание ${occ.title}` : occ.title;
+  const when = formatDateTime(occ.startAt).slice(11);
+  const userIds = Object.entries(occ.marks)
+    .filter(([, mark]) => mark.status === "yes")
+    .map(([id]) => id);
+
+  let sent = 0;
+  for (const userId of userIds) {
+    if (isReminderOff(userId)) continue;
+    const first = !wasReminderNoticed(userId);
+    const lines = [
+      `🔔 **Напоминание:** «${title}» начинается через 15 минут, в **${when}** (МСК). Вы отметили «Буду».`,
+      ...(link ? [`Анонс: ${link}`] : []),
+      ...(first
+        ? [
+            "",
+            "Бот напоминает только тем, кто нажал «Буду». Если напоминания не нужны, отключите их командой `/remind off` (вернуть: `/remind on`) или кнопкой ниже.",
+          ]
+        : []),
+    ];
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(REMIND_OFF_BUTTON_ID).setLabel("Не напоминать больше").setEmoji("🔕").setStyle(ButtonStyle.Secondary)
+    );
+    try {
+      const user = await client.users.fetch(userId);
+      await user.send({ content: lines.join("\n"), components: [row], allowedMentions: { parse: [] } });
+      markReminderNoticed(userId);
+      sent++;
+    } catch (err) {
+      // 50007 — у человека закрыты личные сообщения от участников сервера: это нормально, молча пропускаем.
+      if (discordErrorCode(err) !== 50007) console.warn(`[activity] Не удалось написать ${userId} в ЛС:`, err instanceof Error ? err.message : err);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400)); // не превышаем лимиты Discord при большом числе людей
+  }
+  if (userIds.length) console.log(`[activity] Личные напоминания (${title}): отправлено ${sent} из ${userIds.length}.`);
+}
+
 async function processOccurrence(occ: Occurrence, now: number): Promise<void> {
   if (!getOccurrence(occ.id) || occ.canceled) return;
   const settings = getGuildSettings(occ.guildId);
@@ -331,6 +382,15 @@ async function processOccurrence(occ: Occurrence, now: number): Promise<void> {
     } else {
       occ.reminderDone = true;
       persist();
+    }
+  }
+
+  // 2b. личные напоминания в ЛС тем, кто нажал «Буду»: за 15 минут до начала (опоздавшим после начала не шлём)
+  if (!occ.dmRemindDone && now >= occ.startAt - DM_REMIND_BEFORE_MS) {
+    occ.dmRemindDone = true;
+    persist();
+    if (now < occ.startAt) {
+      await sendPersonalReminders(occ).catch((err) => console.error(`[activity] Личные напоминания (${occ.id}) не отправлены:`, err));
     }
   }
 
@@ -485,6 +545,7 @@ export async function rescheduleOccurrence(occ: Occurrence, newStartAt: number):
     occ.startAt = newStartAt;
     occ.reminderMessage = null;
     occ.reminderDone = false;
+    occ.dmRemindDone = false;
     occ.failures = {};
     persist();
 

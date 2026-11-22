@@ -16,13 +16,16 @@ import * as meeting from "./commands/meeting.js";
 import * as snew from "./commands/snew.js";
 import * as sedit from "./commands/sedit.js";
 import * as lcheck from "./commands/lcheck.js";
+import * as remind from "./commands/remind.js";
+import * as help from "./commands/help.js";
 import * as sklad from "./commands/sklad.js";
 import * as twink from "./commands/twink.js";
 import { initTwink } from "./twink/scheduler.js";
 import { initWarehouse } from "./warehouse/scheduler.js";
 import { initLogCheck } from "./logcheck/scheduler.js";
+import { startBackups } from "./storage.js";
 import { CONFIRM_PREFIX, MARK_PREFIX } from "./activity/render.js";
-import { handleConfirmButton, handleMarkButton, initActivity } from "./activity/service.js";
+import { REMIND_OFF_BUTTON_ID, handleConfirmButton, handleMarkButton, initActivity } from "./activity/service.js";
 import { CANCEL_BUTTON_PREFIX, handleCancelButton, initCaptTracker } from "./captTracker/index.js";
 
 interface Command {
@@ -40,6 +43,8 @@ const commands = new Map<string, Command>([
   [snew.data.name, snew],
   [sedit.data.name, sedit],
   [lcheck.data.name, lcheck],
+  [remind.data.name, remind],
+  [help.data.name, help],
   [sklad.data.name, sklad],
   [twink.data.name, twink],
 ]);
@@ -111,6 +116,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return;
   }
 
+  if (interaction.isButton() && interaction.customId === REMIND_OFF_BUTTON_ID) {
+    try {
+      await remind.handleRemindButton(interaction);
+    } catch (err) {
+      console.error("[discord-bot] Не удалось отключить напоминания по кнопке:", err);
+      await interaction.reply({ content: "Не получилось отключить. Попробуйте командой `/remind off`.", ephemeral: true }).catch(() => {});
+    }
+    return;
+  }
+
   if (interaction.isButton() && (interaction.customId.startsWith(MARK_PREFIX) || interaction.customId.startsWith(CONFIRM_PREFIX))) {
     try {
       if (interaction.customId.startsWith(MARK_PREFIX)) await handleMarkButton(interaction);
@@ -158,6 +173,8 @@ initWarehouse(client);
 initTwink(client);
 // Проверка логов за сутки (ПВП-участие, оскорбления в причинах): раз в сутки после полуночи по МСК, тот же аккаунт и очередь.
 initLogCheck(client);
+// Бэкапы файлов настроек (раз в 6 часов, хранятся 14 суток) и защита от повреждения при записи.
+startBackups();
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {

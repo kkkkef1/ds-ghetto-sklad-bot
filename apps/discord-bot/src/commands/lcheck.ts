@@ -17,20 +17,25 @@ import { parseIds } from "../activity/util.js";
 import { MAIN_GUILD_ID } from "../captTracker/config.js";
 import { isCreatorOrModerator } from "../captTracker/store.js";
 import { isLogCheckRunning, LC_BUILD_ID, summarize } from "../logcheck/runner.js";
-import { runDay } from "../logcheck/scheduler.js";
+import { buildWeeklyFor, runDay, runWeek } from "../logcheck/scheduler.js";
+import { mondayOf } from "../logcheck/weekly.js";
 import {
   DEFAULT_START_MINUTE,
   addWord,
+  getHistory,
   getSettings,
   getWords,
   isDayDone,
+  isWeekDone,
   removeWord,
   resetWords,
   setChannel,
   setEnabled,
   setStartMinute,
+  setWeeklyEnabled,
 } from "../logcheck/store.js";
 import { normalizeWordInput } from "../logcheck/words.js";
+import { confirmAction, respond } from "../confirm.js";
 import { ClientIO } from "../warehouse/discordIO.js";
 import { siteLockInfo } from "../warehouse/siteLock.js";
 import { ownerId } from "../warehouse/scheduler.js";
@@ -71,7 +76,19 @@ export const data = new SlashCommandBuilder()
       .addStringOption((o) => o.setName("date").setDescription("Дата: дд.мм.гггг (или дд.мм — текущий год). По умолчанию — вчера"))
       .addStringOption((o) => o.setName("faction").setDescription("Только эта фракция (по умолчанию — все действующие)").addChoices(...factionChoices))
       .addBooleanOption((o) => o.setName("post").setDescription("true — отправить сводку в канал и засчитать сутки (по умолчанию — показать только вам)"))
-      .addBooleanOption((o) => o.setName("confirm").setDescription("true — подтвердить повторную отправку за уже отправленные сутки"))
+  )
+  .addSubcommand((sc) =>
+    sc
+      .setName("weekly")
+      .setDescription("Недельная сводка по ПВП (понедельник 00:30 МСК): включить или выключить")
+      .addBooleanOption((o) => o.setName("enabled").setDescription("true — включить, false — выключить").setRequired(true))
+  )
+  .addSubcommand((sc) =>
+    sc
+      .setName("week")
+      .setDescription("Недельная сводка по ПВП за любую прошедшую неделю (по умолчанию прошлую); результат показывается только вам")
+      .addStringOption((o) => o.setName("date").setDescription("Любая дата нужной недели: дд.мм.гггг. По умолчанию — прошлая неделя"))
+      .addBooleanOption((o) => o.setName("post").setDescription("true — отправить в канал и засчитать неделю (по умолчанию — показать только вам)"))
   )
   .addSubcommandGroup((g) =>
     g
@@ -96,8 +113,7 @@ export const data = new SlashCommandBuilder()
       .addSubcommand((sc) =>
         sc
           .setName("reset")
-          .setDescription("Вернуть список слов по умолчанию (свои слова пропадут)")
-          .addBooleanOption((o) => o.setName("confirm").setDescription("true — подтвердить сброс").setRequired(true))
+          .setDescription("Вернуть список слов по умолчанию (свои слова пропадут); спросит подтверждение")
       )
   );
 
@@ -124,6 +140,7 @@ function renderStatus(): string {
     `Автопроверка: ${s.enabled ? "включена" : "выключена"}, запуск в ${minuteLabel(s.startMinute)} МСК за вчерашние сутки`,
     `Канал сводок: ${s.channelId ? `<#${s.channelId}>` : "не задан (/lcheck channel) — автопроверка не стартует"}`,
     `Фракции (общие со складом): ${getFactions().map((f) => f.name).join(", ") || "не выбрано"}`,
+    `Недельная сводка по ПВП: ${s.weeklyEnabled ? "включена (понедельник 00:30 МСК)" : "выключена"}; накоплено итогов по суткам: ${Object.keys(getHistory()).length}`,
     `Слов в списке: ${words.filter((w) => w.level === "hard").length} оскорблений, ${words.filter((w) => w.level === "soft").length} спорных`,
     `Сейчас: ${isLogCheckRunning() ? "идёт проверка" : "свободно"}${lock.holder ? `; на сайте работает «${lock.holder}»` : ""}${lock.waiting.length ? `; в очереди: ${lock.waiting.join(", ")}` : ""}`,
   ];
@@ -177,9 +194,9 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
         return void (await reply(removeWord(word) ? `Слово ${word} убрано из списка.` : "Такого слова в списке нет. Выберите его из подсказок."));
       }
       case "reset": {
-        if (!interaction.options.getBoolean("confirm", true)) return void (await reply("Сброс не выполнен: нужно confirm:true."));
+        if (!(await confirmAction(interaction, "**Вернуть список слов к значениям по умолчанию?**\nВсе добавленные вами слова пропадут, а удалённые из списка вернутся."))) return;
         resetWords();
-        return void (await reply("Список слов возвращён к значениям по умолчанию."));
+        return void (await respond(interaction, "Список слов возвращён к значениям по умолчанию."));
       }
     }
     return;
@@ -226,6 +243,17 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     case "disable":
       setEnabled(false);
       return void (await reply("Проверка логов по расписанию выключена. Ручной запуск (/lcheck run) продолжает работать. Включить обратно: /lcheck enable."));
+    case "weekly":
+      setWeeklyEnabled(interaction.options.getBoolean("enabled", true));
+      return void (
+        await reply(
+          getSettings().weeklyEnabled
+            ? `Недельная сводка по ПВП включена: каждый понедельник в 00:30 МСК, в тот же канал, что и дневные.${getSettings().channelId ? "" : " Канал пока не задан (/lcheck channel)."}`
+            : "Недельная сводка по ПВП выключена. Включить обратно: /lcheck weekly enabled:true."
+        )
+      );
+    case "week":
+      return void (await handleWeek(interaction));
     case "run":
       return void (await handleRun(interaction));
   }
@@ -247,11 +275,11 @@ async function handleRun(interaction: ChatInputCommandInteraction): Promise<void
   const post = interaction.options.getBoolean("post") ?? false;
   const faction = interaction.options.getString("faction");
   if (post && !getSettings().channelId) return void (await fail("Канал для сводок не задан (/lcheck channel). Уберите post или задайте канал."));
-  if (post && isDayDone(dateKey) && !interaction.options.getBoolean("confirm")) {
-    return void (await fail(`Сводка за ${formatDateKey(dateKey)} уже отправлялась. Чтобы отправить ещё раз, добавьте confirm:true.`));
+  if (post && isDayDone(dateKey)) {
+    if (!(await confirmAction(interaction, `**Сводка за ${formatDateKey(dateKey)} уже отправлялась в канал. Отправить ещё раз?**\nВ канале появится второе такое же сообщение.`))) return;
+  } else {
+    await interaction.deferReply({ ephemeral: true });
   }
-
-  await interaction.deferReply({ ephemeral: true });
   await interaction.editReply(`Запускаю проверку логов за ${formatDateKey(dateKey)}${faction ? ` (только ${faction})` : ""}. Если сайт попросит код Google Authenticator, бот напишет владельцу в личку.`);
 
   try {
@@ -269,5 +297,42 @@ async function handleRun(interaction: ChatInputCommandInteraction): Promise<void
     console.error("[logcheck] Ручная проверка не удалась:", err);
     const message = err instanceof Error ? err.message : String(err);
     await safeFollowUp(interaction, { content: `Проверка не удалась: ${message}`.slice(0, 1990), ephemeral: true });
+  }
+}
+
+async function handleWeek(interaction: ChatInputCommandInteraction): Promise<void> {
+  const fail = (content: string) => interaction.reply({ content, ephemeral: true });
+  const now = Date.now();
+  const today = mskDateKey(now);
+  const dateInput = interaction.options.getString("date");
+  const picked = dateInput ? parseDateInput(dateInput, now) : null;
+  if (dateInput && !picked) return void (await fail("Не разобрал дату. Формат: дд.мм.гггг, например 17.11.2026."));
+  const weekStart = picked ? mondayOf(picked) : addDaysToKey(mondayOf(today), -7);
+  if (addDaysToKey(weekStart, 6) >= today) return void (await fail("Эта неделя ещё не закончилась: сводку можно собрать только за прошедшие недели (до последнего воскресенья)."));
+
+  const weekly = buildWeeklyFor(weekStart);
+  if (!weekly) return void (await fail("Не выбрано ни одной фракции (/sklad faction add)."));
+  const post = interaction.options.getBoolean("post") ?? false;
+
+  if (!post) {
+    await interaction.reply({ content: weekly.messages[0].slice(0, 1990), ephemeral: true, allowedMentions: { parse: [] } });
+    for (const message of weekly.messages.slice(1, 5)) {
+      await interaction.followUp({ content: message, ephemeral: true, allowedMentions: { parse: [] } });
+    }
+    await interaction.followUp({ content: "Показано только вам, неделя не засчитана. Отправить в канал: добавьте post:true.", ephemeral: true });
+    return;
+  }
+
+  if (!getSettings().channelId) return void (await fail("Канал для сводок не задан (/lcheck channel). Уберите post или задайте канал."));
+  if (isWeekDone(weekStart)) {
+    if (!(await confirmAction(interaction, `**Недельная сводка за ${formatDateKey(weekStart)} – ${formatDateKey(addDaysToKey(weekStart, 6))} уже отправлялась в канал. Отправить ещё раз?**\nВ канале появится второе такое же сообщение.`))) return;
+  } else {
+    await interaction.deferReply({ ephemeral: true });
+  }
+  try {
+    const sent = await runWeek(interaction.client, weekStart);
+    await interaction.editReply({ content: `Недельная сводка отправлена в канал (данные за ${sent.daysWithData} из 7 суток).`, components: [] });
+  } catch (err) {
+    await interaction.editReply({ content: `Не удалось отправить: ${err instanceof Error ? err.message : String(err)}`.slice(0, 1990), components: [] });
   }
 }
