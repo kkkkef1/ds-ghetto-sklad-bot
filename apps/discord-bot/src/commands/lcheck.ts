@@ -86,7 +86,7 @@ export const data = new SlashCommandBuilder()
   .addSubcommand((sc) =>
     sc
       .setName("week")
-      .setDescription("Недельная сводка по ПВП за любую прошедшую неделю (по умолчанию прошлую); результат показывается только вам")
+      .setDescription("Недельная сводка по ПВП за прошедшую неделю (по умолчанию прошлую); видно только вам")
       .addStringOption((o) => o.setName("date").setDescription("Любая дата нужной недели: дд.мм.гггг. По умолчанию — прошлая неделя"))
       .addBooleanOption((o) => o.setName("post").setDescription("true — отправить в канал и засчитать неделю (по умолчанию — показать только вам)"))
   )
