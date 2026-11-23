@@ -30,7 +30,8 @@ interface StoreData {
   history: Record<string, DayStats>;
 }
 
-export type DayStats = Record<string, { name: string; events: Record<string, number>; incomplete?: boolean }>;
+/** Итоги суток по фракции: игроки по ПВП-мероприятиям (уникальные) и число вывезенных хаммеров (ВЗХ). */
+export type DayStats = Record<string, { name: string; events: Record<string, number>; hummers?: number; incomplete?: boolean }>;
 
 export const DEFAULT_START_MINUTE = 10;
 
@@ -154,7 +155,7 @@ export const getHistory = (): Readonly<Record<string, DayStats>> => data.history
 export const hasDayStats = (dateKey: string): boolean => dateKey in data.history;
 
 /** Запоминает итоги суток по прочитанным фракциям (фракции с ошибкой не трогаем). Повторная проверка суток обновляет данные. */
-export function recordDayStats(dateKey: string, factions: { code: string; name: string; error?: string; incomplete: boolean; pvp: Map<string, Set<string>> }[]): void {
+export function recordDayStats(dateKey: string, factions: { code: string; name: string; error?: string; incomplete: boolean; hummers: number; pvp: Map<string, Set<string>> }[]): void {
   const day: DayStats = { ...(data.history[dateKey] ?? {}) };
   let any = false;
   for (const f of factions) {
@@ -162,6 +163,7 @@ export function recordDayStats(dateKey: string, factions: { code: string; name: 
     day[f.code] = {
       name: f.name,
       events: Object.fromEntries([...f.pvp.entries()].map(([event, ids]) => [event, ids.size])),
+      ...(f.hummers ? { hummers: f.hummers } : {}),
       ...(f.incomplete ? { incomplete: true } : {}),
     };
     any = true;

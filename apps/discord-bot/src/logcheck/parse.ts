@@ -5,6 +5,8 @@
 //   Увольняет Ник[ID] с причиной "…".          («Увольняется по собственному желанию» — без причины, не берём)
 //   Устанавливает Имя Фамилия отдел …          (после слова «отдел» идёт название отдела — его и проверяем)
 //   Входит на территорию войны за …            (ПВП-мероприятие)
+//   вывозит хаммер с территории и получает N материалов …   (ВЗХ: входов нет, считаем число таких строк = вывезенных хаммеров;
+//                                                            количество материалов не важно)
 
 import type { LogRow } from "../warehouse/logsPage.js";
 
@@ -32,8 +34,12 @@ const PVP_RE = /^Входит на территорию войны за\s+(.+?)\
 
 const KIND_BY_WORD: Record<string, ReasonKind> = { повышает: "promotion", понижает: "demotion", увольняет: "dismissal" };
 
-export function parseRow(row: LogRow): { reason?: ReasonEvent; pvp?: PvpEntry } {
+const HUMMER_RE = /^вывозит\s+хаммер/iu;
+
+export function parseRow(row: LogRow): { reason?: ReasonEvent; pvp?: PvpEntry; hummer?: boolean } {
   const text = row.text.replace(/\s+/g, " ").trim();
+
+  if (HUMMER_RE.test(text)) return { hummer: true };
 
   const action = text.match(ACTION_RE);
   if (action) {

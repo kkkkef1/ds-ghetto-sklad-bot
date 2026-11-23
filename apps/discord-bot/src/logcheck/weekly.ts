@@ -15,9 +15,12 @@
 //
 //   **Динамика:**
 //   > 📈 Растут: Bloods (+21%)
+//
+//   ВЗХ (входов в логах нет) идёт отдельным блоком: по дням и «ВЗХ за неделю — всего хаммеров» со своей динамикой.
+//   Хаммеры и игроков не складываем: это разные единицы.
 
 import { WEEKDAY_SHORT, addDaysToKey, formatDateKey, weekdayOfKey } from "../activity/time.js";
-import { chunkParts, dotted, shortFactionName } from "./report.js";
+import { HUMMER_TITLE, chunkParts, dotted, shortFactionName } from "./report.js";
 import type { DayStats } from "./store.js";
 
 export interface WeeklyFaction {
@@ -86,12 +89,36 @@ const fmt = (n: number): string => (Number.isInteger(n) ? String(n) : n.toFixed(
 
 type Trend = { kind: "up" | "down" | "flat" | "new" | "none"; pct?: number };
 
-function trendOf(now: number, prev: number | null): Trend {
+function trendOf(now: number, prev: number | null, minAbs: number = CHANGE_ABS): Trend {
   if (prev === null) return { kind: "none" };
-  if (prev === 0) return now >= CHANGE_ABS ? { kind: "new" } : { kind: "flat" };
+  if (prev === 0) return now >= minAbs ? { kind: "new" } : { kind: "flat" };
   const pct = Math.round(((now - prev) / prev) * 100);
-  if (Math.abs(now - prev) >= CHANGE_ABS && Math.abs(pct) >= CHANGE_PCT) return { kind: pct > 0 ? "up" : "down", pct };
+  if (Math.abs(now - prev) >= minAbs && Math.abs(pct) >= CHANGE_PCT) return { kind: pct > 0 ? "up" : "down", pct };
   return { kind: "flat", pct };
+}
+
+/** Для хаммеров порог абсолютного изменения ниже: на ВЗХ их обычно около пяти за день. */
+const HUMMER_CHANGE_ABS = 2;
+
+interface HummerAgg {
+  days: { date: string; counts: Map<string, number | null> }[];
+  perFaction: Map<string, { total: number; avg: number; missing: boolean }>;
+}
+
+/** ВЗХ-сутки недели: те, где хотя бы одна фракция вывезла хаммеры. */
+function aggregateHummers(start: string, history: Readonly<Record<string, DayStats>>, factions: WeeklyFaction[]): HummerAgg {
+  const days: HummerAgg["days"] = [];
+  for (const date of weekDays(start)) {
+    const day = history[date];
+    if (!day || !factions.some((f) => (day[f.code]?.hummers ?? 0) > 0)) continue;
+    days.push({ date, counts: new Map(factions.map((f) => [f.code, day[f.code] ? (day[f.code].hummers ?? 0) : null])) });
+  }
+  const perFaction = new Map<string, { total: number; avg: number; missing: boolean }>();
+  for (const f of factions) {
+    const total = days.reduce((sum, d) => sum + (d.counts.get(f.code) ?? 0), 0);
+    perFaction.set(f.code, { total, avg: days.length ? total / days.length : 0, missing: days.some((d) => d.counts.get(f.code) === null) });
+  }
+  return { days, perFaction };
 }
 
 const signed = (pct: number): string => `${pct > 0 ? "+" : "−"}${Math.abs(pct)}%`;
@@ -101,16 +128,19 @@ export function buildWeekly(weekStart: string, history: Readonly<Record<string, 
   const prevStart = addDaysToKey(weekStart, -7);
   const now = aggregate(weekStart, history, factions);
   const prev = aggregate(prevStart, history, factions);
+  const hNow = aggregateHummers(weekStart, history, factions);
+  const hPrev = aggregateHummers(prevStart, history, factions);
   const names = new Map(factions.map((f) => [f.code, shortFactionName(f.code, f.name)]));
   const width = Math.max(...[...names.values()].map((n) => n.length)) + 8;
   const range = (start: string) => `${formatDateKey(start)} – ${formatDateKey(addDaysToKey(start, 6))}`;
 
   const parts: { text: string; sep: string }[] = [{ text: `**Недельная сводка за ${range(weekStart)}**`, sep: "" }];
   let noPrevNote = "";
+  let noPrevHummerNote = "";
 
-  if (!now.eventDays.length) {
+  if (!now.eventDays.length && !hNow.days.length) {
     parts.push({ text: `**Участие в ПВП-мероприятиях по дням:**\n> ПВП за неделю не было${now.daysWithData ? "" : " (данных за эту неделю нет)"}`, sep: "\n\n" });
-  } else {
+  } else if (now.eventDays.length) {
     for (const d of now.eventDays) {
       const lines = factions.map((f) => {
         const count = d.counts.get(f.code);
@@ -165,9 +195,45 @@ export function buildWeekly(weekStart: string, history: Readonly<Record<string, 
     if (dynamics.length) parts.push({ text: ["**Динамика:**", ...dynamics].join("\n"), sep: "\n\n" });
   }
 
-  const notes: string[] = noPrevNote ? [noPrevNote] : [];
+  // ВЗХ: по дням, затем итог за неделю и динамика к прошлой неделе (по среднему на одно ВЗХ).
+  if (hNow.days.length) {
+    for (const d of hNow.days) {
+      const lines = factions.map((f) => {
+        const count = d.counts.get(f.code);
+        const name = names.get(f.code)!;
+        if (count === null || count === undefined) return `> ${dotted(name, width, "⚠️ нет данных")}`;
+        return `> ${dotted(name, width, String(count))}${count === 0 ? " ⚠️" : ""}`;
+      });
+      const wd = WEEKDAY_SHORT[weekdayOfKey(d.date)];
+      parts.push({ text: [`**${formatDateKey(d.date).slice(0, 5)} (${wd}), ${HUMMER_TITLE}:**`, ...lines].join("\n"), sep: "\n\n" });
+    }
+    const comparable = hPrev.days.length > 0;
+    const totalLines = factions.map((f) => {
+      const cur = hNow.perFaction.get(f.code)!;
+      const trend = trendOf(cur.avg, comparable ? hPrev.perFaction.get(f.code)!.avg : null, HUMMER_CHANGE_ABS);
+      const base = `${fmt(cur.total)} (ср. ${fmt(cur.avg)})${cur.missing ? " ⚠️ есть дни без данных" : ""}`;
+      const tail =
+        trend.kind === "up" ? ` ▲ ${signed(trend.pct!)} 📈`
+        : trend.kind === "down" ? ` ▼ ${signed(trend.pct!)} 📉`
+        : trend.kind === "new" ? " ▲ в прошлую неделю хаммеров не было 📈"
+        : trend.kind === "flat" && trend.pct !== undefined ? ` ≈ ${signed(trend.pct)}`
+        : "";
+      return `> ${dotted(names.get(f.code)!, width, base + tail)}`;
+    });
+    parts.push({
+      text: [`**ВЗХ за неделю — всего хаммеров${comparable ? ` (сравнение с ${range(prevStart)})` : ""}:**`, ...totalLines].join("\n"),
+      sep: "\n\n",
+    });
+    if (!comparable) {
+      noPrevHummerNote = hPrev.days.length === 0 && prev.daysWithData
+        ? `ℹ️ Динамики ВЗХ нет: на прошлой неделе (${range(prevStart)}) ВЗХ не было.`
+        : `ℹ️ Динамики ВЗХ нет: данных за прошлую неделю (${range(prevStart)}) нет.`;
+    }
+  }
+
+  const notes: string[] = [...(noPrevNote ? [noPrevNote] : []), ...(noPrevHummerNote ? [noPrevHummerNote] : [])];
   if (now.daysWithData < 7) notes.push(`⚠️ Данные есть за ${now.daysWithData} из 7 суток этой недели: недостающие сутки бот не читал.`);
-  if (now.eventDays.length && prev.eventDays.length && prev.daysWithData < 7) notes.push(`⚠️ Прошлая неделя неполная: данные за ${prev.daysWithData} из 7 суток, динамика примерная.`);
+  if (((now.eventDays.length && prev.eventDays.length) || (hNow.days.length && hPrev.days.length)) && prev.daysWithData < 7) notes.push(`⚠️ Прошлая неделя неполная: данные за ${prev.daysWithData} из 7 суток, динамика примерная.`);
   if (notes.length) parts.push({ text: notes.join("\n"), sep: "\n\n" });
 
   return { messages: chunkParts(parts), daysWithData: now.daysWithData, prevDaysWithData: prev.daysWithData };

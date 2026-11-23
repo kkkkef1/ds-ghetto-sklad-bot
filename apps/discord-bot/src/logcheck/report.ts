@@ -34,6 +34,8 @@ export interface FactionResult {
   incomplete: boolean;
   rowsRead: number;
   pages: number;
+  /** ВЗХ: сколько хаммеров фракция вывезла за сутки (число строк «вывозит хаммер…»). */
+  hummers: number;
   findings: Finding[];
   /** Событие («война за ресурсы») → ID вошедших персонажей (уникальные). */
   pvp: Map<string, Set<string>>;
@@ -62,17 +64,21 @@ export function dotted(name: string, width: number, value: string): string {
   return `${name} ${dots} ${value}`;
 }
 
+/** Блок ВЗХ: сколько хаммеров вывезла каждая фракция. */
+export const HUMMER_TITLE = "ВЗХ — вывезено хаммеров";
+
 function pvpSections(results: FactionResult[]): string[] {
   const header = (event?: string) => `**Участие в ПВП-мероприятиях${event ? ` (${event})` : ""}:**`;
   const events = [...new Set(results.flatMap((r) => [...r.pvp.keys()]))].sort((a, b) => a.localeCompare(b, "ru"));
-  if (!events.length) {
+  const hasHummers = results.some((r) => !r.error && r.hummers > 0);
+  if (!events.length && !hasHummers) {
     const failed = results.filter((r) => r.error).map((r) => r.name);
     const lines = ["> ПВП за сутки не было"];
     if (failed.length) lines.push(`> ⚠️ нет данных: ${failed.join(", ")}`);
     return [[header(), ...lines].join("\n")];
   }
   const width = Math.max(...results.map((r) => r.name.length)) + 8;
-  return events.map((event) => {
+  const sections = events.map((event) => {
     const lines = results.map((r) => {
       if (r.error) return `> ${dotted(r.name, width, "⚠️ нет данных")}`;
       const count = r.pvp.get(event)?.size ?? 0;
@@ -81,6 +87,16 @@ function pvpSections(results: FactionResult[]): string[] {
     });
     return [header(event), ...lines].join("\n");
   });
+  // ВЗХ: входов в логах нет, поэтому показываем число вывезенных хаммеров (вместо «ПВП за сутки не было»).
+  if (hasHummers) {
+    const lines = results.map((r) => {
+      if (r.error) return `> ${dotted(r.name, width, "⚠️ нет данных")}`;
+      const tail = r.incomplete ? " ⚠️ данные неполные" : r.hummers === 0 ? " ⚠️" : "";
+      return `> ${dotted(r.name, width, String(r.hummers))}${tail}`;
+    });
+    sections.push([`**${HUMMER_TITLE}:**`, ...lines].join("\n"));
+  }
+  return sections;
 }
 
 function safeLine(text: string): string {
