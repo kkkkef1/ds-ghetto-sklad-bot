@@ -43,7 +43,7 @@ export interface LogCheckResult {
 }
 
 /** Номер сборки модуля: видно в /lcheck status, какой код запущен. */
-export const LC_BUILD_ID = "2026-11-23.r3";
+export const LC_BUILD_ID = "2026-11-24.r4";
 
 let running = false;
 export const isLogCheckRunning = (): boolean => running;
@@ -81,6 +81,7 @@ async function runLocked(day: DayWindow, io: OperatorIO, opts: { onlyFactions?: 
         rowsRead: 0,
         pages: 0,
         hummers: 0,
+        market: new Set(),
         findings: [],
         pvp: new Map(),
       };
@@ -107,8 +108,9 @@ async function runLocked(day: DayWindow, io: OperatorIO, opts: { onlyFactions?: 
         if (result.incomplete) notices.push(`${result.name}: логи за сутки прочитаны не полностью (слишком много страниц) — данные могут быть неполными.`);
 
         for (const row of fetched.rows) {
-          const { reason, pvp, hummer } = parseRow(row);
+          const { reason, pvp, hummer, market } = parseRow(row);
           if (hummer) result.hummers++;
+          if (market) result.market.add(market.characterId);
           if (pvp) {
             const set = result.pvp.get(pvp.event) ?? new Set<string>();
             set.add(pvp.characterId);
@@ -148,7 +150,7 @@ export function summarize(r: LogCheckResult): string {
     if (f.error) lines.push(`• ${f.name}: ${f.error}`);
     else {
       const pvp = [...f.pvp.entries()].map(([event, ids]) => `${event}: ${ids.size}`).join("; ") || "ПВП нет";
-      const hummers = f.hummers ? `, хаммеров ${f.hummers}` : "";
+      const hummers = (f.hummers ? `, хаммеров ${f.hummers}` : "") + (f.market.size ? `, черный рынок ${f.market.size}` : "");
       lines.push(`• ${f.name}: строк ${f.rowsRead} (страниц ${f.pages}), нарушений ${f.findings.length}, ${pvp}${hummers}${f.incomplete ? " — данные неполные" : ""}`);
     }
   }

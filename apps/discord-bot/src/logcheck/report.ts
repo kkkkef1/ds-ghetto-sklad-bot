@@ -36,6 +36,8 @@ export interface FactionResult {
   pages: number;
   /** ВЗХ: сколько хаммеров фракция вывезла за сутки (число строк «вывозит хаммер…»). */
   hummers: number;
+  /** Захват черного рынка: ID уникальных участников за сутки. */
+  market: Set<string>;
   findings: Finding[];
   /** Событие («война за ресурсы») → ID вошедших персонажей (уникальные). */
   pvp: Map<string, Set<string>>;
@@ -66,19 +68,24 @@ export function dotted(name: string, width: number, value: string): string {
 
 /** Блок ВЗХ: сколько хаммеров вывезла каждая фракция. */
 export const HUMMER_TITLE = "ВЗХ — вывезено хаммеров";
+/** Блок захвата черного рынка (раз в сутки): сколько игроков участвовало по фракциям. */
+export const MARKET_TITLE = "Захват черного рынка — участвовало";
 
 function pvpSections(results: FactionResult[]): string[] {
   const header = (event?: string) => `**Участие в ПВП-мероприятиях${event ? ` (${event})` : ""}:**`;
   const events = [...new Set(results.flatMap((r) => [...r.pvp.keys()]))].sort((a, b) => a.localeCompare(b, "ru"));
   const hasHummers = results.some((r) => !r.error && r.hummers > 0);
+  const hasMarket = results.some((r) => !r.error && r.market.size > 0);
+  const width = Math.max(...results.map((r) => r.name.length)) + 8;
+  const sections: string[] = [];
+  // «ПВП за сутки не было» относится к войнам и ВЗХ; захват черного рынка идёт отдельным блоком ниже.
   if (!events.length && !hasHummers) {
     const failed = results.filter((r) => r.error).map((r) => r.name);
     const lines = ["> ПВП за сутки не было"];
     if (failed.length) lines.push(`> ⚠️ нет данных: ${failed.join(", ")}`);
-    return [[header(), ...lines].join("\n")];
+    sections.push([header(), ...lines].join("\n"));
   }
-  const width = Math.max(...results.map((r) => r.name.length)) + 8;
-  const sections = events.map((event) => {
+  sections.push(...events.map((event) => {
     const lines = results.map((r) => {
       if (r.error) return `> ${dotted(r.name, width, "⚠️ нет данных")}`;
       const count = r.pvp.get(event)?.size ?? 0;
@@ -86,7 +93,7 @@ function pvpSections(results: FactionResult[]): string[] {
       return `> ${dotted(r.name, width, String(count))}${tail}`;
     });
     return [header(event), ...lines].join("\n");
-  });
+  }));
   // ВЗХ: входов в логах нет, поэтому показываем число вывезенных хаммеров (вместо «ПВП за сутки не было»).
   if (hasHummers) {
     const lines = results.map((r) => {
@@ -95,6 +102,15 @@ function pvpSections(results: FactionResult[]): string[] {
       return `> ${dotted(r.name, width, String(r.hummers))}${tail}`;
     });
     sections.push([`**${HUMMER_TITLE}:**`, ...lines].join("\n"));
+  }
+  // Захват черного рынка: уникальные участники по фракциям.
+  if (hasMarket) {
+    const lines = results.map((r) => {
+      if (r.error) return `> ${dotted(r.name, width, "⚠️ нет данных")}`;
+      const tail = r.incomplete ? " ⚠️ данные неполные" : r.market.size === 0 ? " ⚠️" : "";
+      return `> ${dotted(r.name, width, String(r.market.size))}${tail}`;
+    });
+    sections.push([`**${MARKET_TITLE}:**`, ...lines].join("\n"));
   }
   return sections;
 }

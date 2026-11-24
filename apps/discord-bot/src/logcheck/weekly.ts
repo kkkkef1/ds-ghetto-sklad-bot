@@ -1,26 +1,24 @@
 // ===================== НЕДЕЛЬНАЯ СВОДКА ПО ПВП =====================
 //
 // Собирается из дневных итогов (только счётчики), которые бот копит при каждой дневной проверке: логи заново
-// не читаются. Неделя = понедельник–воскресенье по МСК. Для каждой фракции считаются участия по дням, итог за
-// неделю и динамика к прошлой неделе (по среднему на одно ПВП-мероприятие, чтобы неделя с двумя мероприятиями
-// честно сравнивалась с неделей с одним).
+// не читаются. Неделя = понедельник–воскресенье по МСК. Формат простой: блок на фракцию, в нём по строке на тип
+// мероприятия: сколько стало за неделю и сколько было на прошлой.
 //
-//   **Недельная сводка за 16.11.2026 – 22.11.2026**
+//   **Недельная сводка за 16.11 – 22.11**
 //
-//   **18.11 (ср), война за ресурсы:**
-//   > Bloods ........ 14
+//   **Bloods**
+//   > ПВП-войны: 29 участий (было 22) 📈
+//   > ВЗХ: 10 хаммеров (было 3) 📈
+//   > Черный рынок: 81 участие (было 63) 📈
 //
-//   **Итого за неделю (сравнение с 09.11.2026 – 15.11.2026):**
-//   > Bloods ........ 34 (ср. 17) ▲ +21% 📈
+//   -# 📈 / 📉 — изменение больше чем на четверть к прошлой неделе. «Участие» — один игрок на одном мероприятии.
 //
-//   **Динамика:**
-//   > 📈 Растут: Bloods (+21%)
-//
-//   ВЗХ (входов в логах нет) идёт отдельным блоком: по дням и «ВЗХ за неделю — всего хаммеров» со своей динамикой.
-//   Хаммеры и игроков не складываем: это разные единицы.
+// Если за какие-то сутки недели данных нет, складываются те сутки, что есть (внизу короткая пометка «Учтено суток: N из 7»).
+// Стрелки 📈/📉 ставятся только когда сравнение честное: данных за обе недели поровну суток и мероприятий каждого типа поровну.
+// Иначе «5 суток против 7» показало бы ложную просадку.
 
-import { WEEKDAY_SHORT, addDaysToKey, formatDateKey, weekdayOfKey } from "../activity/time.js";
-import { HUMMER_TITLE, chunkParts, dotted, shortFactionName } from "./report.js";
+import { addDaysToKey, formatDateKey } from "../activity/time.js";
+import { chunkParts, shortFactionName } from "./report.js";
 import type { DayStats } from "./store.js";
 
 export interface WeeklyFaction {
@@ -35,206 +33,138 @@ export interface WeeklyResult {
   prevDaysWithData: number;
 }
 
-/** Порог «заметного» изменения: не меньше 25% и не меньше 3 участников в среднем на мероприятие. */
+/** Стрелка ставится при изменении больше чем на четверть и не меньше чем на несколько единиц (чтобы 1 → 2 не считалось «ростом»). */
 const CHANGE_PCT = 25;
-const CHANGE_ABS = 3;
 
 /** Понедельник недели, в которую входит дата. */
 export function mondayOf(dateKey: string): string {
-  return addDaysToKey(dateKey, -((weekdayOfKey(dateKey) + 6) % 7));
+  const [y, m, d] = dateKey.split("-").map(Number);
+  const weekday = new Date(Date.UTC(y, m - 1, d)).getUTCDay(); // 0 = воскресенье
+  return addDaysToKey(dateKey, -((weekday + 6) % 7));
 }
 
 const weekDays = (start: string): string[] => Array.from({ length: 7 }, (_, i) => addDaysToKey(start, i));
 
-interface EventDay {
-  date: string;
-  event: string;
-  /** код фракции → число игроков; null — по этой фракции в тот день нет данных. */
-  counts: Map<string, number | null>;
+/** Склонение по числу: plural(2, ["участие", "участия", "участий"]) → «участия». */
+function plural(n: number, forms: [string, string, string]): string {
+  const a = Math.abs(n) % 100;
+  const b = a % 10;
+  if (a > 10 && a < 20) return forms[2];
+  if (b > 1 && b < 5) return forms[1];
+  if (b === 1) return forms[0];
+  return forms[2];
 }
 
+type Kind = "wars" | "hummers" | "market";
+
+interface KindSpec {
+  kind: Kind;
+  title: string;
+  forms: [string, string, string];
+  /** Не меньше стольких единиц разницы для стрелки. */
+  minAbs: number;
+}
+
+const KINDS: KindSpec[] = [
+  { kind: "wars", title: "ПВП-войны", forms: ["участие", "участия", "участий"], minAbs: 3 },
+  { kind: "hummers", title: "ВЗХ", forms: ["хаммер", "хаммера", "хаммеров"], minAbs: 2 },
+  { kind: "market", title: "Черный рынок", forms: ["участие", "участия", "участий"], minAbs: 3 },
+];
+
 interface WeekAgg {
-  eventDays: EventDay[];
+  /** Сколько суток недели есть в истории. */
   daysWithData: number;
-  /** missing — хотя бы за один день с ПВП по фракции нет данных (например, её не удалось прочитать). */
-  perFaction: Map<string, { total: number; avg: number; missing: boolean }>;
+  /** Сколько «мероприятий» каждого типа было (дни-события для войн, дни проведения для ВЗХ и рынка). */
+  events: Record<Kind, number>;
+  /** тип → код фракции → сумма за неделю по имеющимся суткам. */
+  totals: Record<Kind, Map<string, number>>;
 }
 
 function aggregate(start: string, history: Readonly<Record<string, DayStats>>, factions: WeeklyFaction[]): WeekAgg {
-  const eventDays: EventDay[] = [];
-  let daysWithData = 0;
+  const agg: WeekAgg = {
+    daysWithData: 0,
+    events: { wars: 0, hummers: 0, market: 0 },
+    totals: { wars: new Map(), hummers: new Map(), market: new Map() },
+  };
+  for (const f of factions) for (const kind of ["wars", "hummers", "market"] as Kind[]) agg.totals[kind].set(f.code, 0);
+
   for (const date of weekDays(start)) {
     const day = history[date];
     if (!day) continue;
-    daysWithData++;
+    agg.daysWithData++;
+
+    // Войны: событие-день на каждое мероприятие (в день бывает не больше нескольких), игроки суммируются по фракциям.
     const events = new Set<string>();
     for (const f of factions) for (const event of Object.keys(day[f.code]?.events ?? {})) events.add(event);
-    for (const event of [...events].sort((a, b) => a.localeCompare(b, "ru"))) {
-      eventDays.push({ date, event, counts: new Map(factions.map((f) => [f.code, day[f.code] ? (day[f.code].events[event] ?? 0) : null])) });
+    agg.events.wars += events.size;
+    for (const f of factions) {
+      const sum = Object.values(day[f.code]?.events ?? {}).reduce((a, b) => a + b, 0);
+      agg.totals.wars.set(f.code, (agg.totals.wars.get(f.code) ?? 0) + sum);
+    }
+
+    // ВЗХ и черный рынок: день проведения — когда хотя бы одна фракция дала число > 0.
+    for (const [kind, field] of [["hummers", "hummers"], ["market", "market"]] as const) {
+      if (!factions.some((f) => (day[f.code]?.[field] ?? 0) > 0)) continue;
+      agg.events[kind]++;
+      for (const f of factions) agg.totals[kind].set(f.code, (agg.totals[kind].get(f.code) ?? 0) + (day[f.code]?.[field] ?? 0));
     }
   }
-  const perFaction = new Map<string, { total: number; avg: number; missing: boolean }>();
-  for (const f of factions) {
-    const total = eventDays.reduce((sum, d) => sum + (d.counts.get(f.code) ?? 0), 0);
-    perFaction.set(f.code, {
-      total,
-      avg: eventDays.length ? total / eventDays.length : 0,
-      missing: eventDays.some((d) => d.counts.get(f.code) === null),
-    });
-  }
-  return { eventDays, daysWithData, perFaction };
+  return agg;
 }
 
-const fmt = (n: number): string => (Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, ""));
-
-type Trend = { kind: "up" | "down" | "flat" | "new" | "none"; pct?: number };
-
-function trendOf(now: number, prev: number | null, minAbs: number = CHANGE_ABS): Trend {
-  if (prev === null) return { kind: "none" };
-  if (prev === 0) return now >= minAbs ? { kind: "new" } : { kind: "flat" };
-  const pct = Math.round(((now - prev) / prev) * 100);
-  if (Math.abs(now - prev) >= minAbs && Math.abs(pct) >= CHANGE_PCT) return { kind: pct > 0 ? "up" : "down", pct };
-  return { kind: "flat", pct };
+function arrow(now: number, prev: number, minAbs: number): string {
+  const diff = now - prev;
+  if (Math.abs(diff) < minAbs) return "";
+  if (prev === 0) return diff > 0 ? " 📈" : "";
+  if ((Math.abs(diff) / prev) * 100 <= CHANGE_PCT) return "";
+  return diff > 0 ? " 📈" : " 📉";
 }
-
-/** Для хаммеров порог абсолютного изменения ниже: на ВЗХ их обычно около пяти за день. */
-const HUMMER_CHANGE_ABS = 2;
-
-interface HummerAgg {
-  days: { date: string; counts: Map<string, number | null> }[];
-  perFaction: Map<string, { total: number; avg: number; missing: boolean }>;
-}
-
-/** ВЗХ-сутки недели: те, где хотя бы одна фракция вывезла хаммеры. */
-function aggregateHummers(start: string, history: Readonly<Record<string, DayStats>>, factions: WeeklyFaction[]): HummerAgg {
-  const days: HummerAgg["days"] = [];
-  for (const date of weekDays(start)) {
-    const day = history[date];
-    if (!day || !factions.some((f) => (day[f.code]?.hummers ?? 0) > 0)) continue;
-    days.push({ date, counts: new Map(factions.map((f) => [f.code, day[f.code] ? (day[f.code].hummers ?? 0) : null])) });
-  }
-  const perFaction = new Map<string, { total: number; avg: number; missing: boolean }>();
-  for (const f of factions) {
-    const total = days.reduce((sum, d) => sum + (d.counts.get(f.code) ?? 0), 0);
-    perFaction.set(f.code, { total, avg: days.length ? total / days.length : 0, missing: days.some((d) => d.counts.get(f.code) === null) });
-  }
-  return { days, perFaction };
-}
-
-const signed = (pct: number): string => `${pct > 0 ? "+" : "−"}${Math.abs(pct)}%`;
 
 /** Сообщения недельной сводки за неделю, начинающуюся в понедельник weekStart («2026-11-16»). */
 export function buildWeekly(weekStart: string, history: Readonly<Record<string, DayStats>>, factions: WeeklyFaction[]): WeeklyResult {
   const prevStart = addDaysToKey(weekStart, -7);
   const now = aggregate(weekStart, history, factions);
   const prev = aggregate(prevStart, history, factions);
-  const hNow = aggregateHummers(weekStart, history, factions);
-  const hPrev = aggregateHummers(prevStart, history, factions);
-  const names = new Map(factions.map((f) => [f.code, shortFactionName(f.code, f.name)]));
-  const width = Math.max(...[...names.values()].map((n) => n.length)) + 8;
-  const range = (start: string) => `${formatDateKey(start)} – ${formatDateKey(addDaysToKey(start, 6))}`;
+  const short = (key: string) => formatDateKey(key).slice(0, 5);
+  const title = `**Недельная сводка за ${short(weekStart)} – ${short(addDaysToKey(weekStart, 6))}**`;
+  const done = (messages: string[]): WeeklyResult => ({ messages, daysWithData: now.daysWithData, prevDaysWithData: prev.daysWithData });
 
-  const parts: { text: string; sep: string }[] = [{ text: `**Недельная сводка за ${range(weekStart)}**`, sep: "" }];
-  let noPrevNote = "";
-  let noPrevHummerNote = "";
-
-  if (!now.eventDays.length && !hNow.days.length) {
-    parts.push({ text: `**Участие в ПВП-мероприятиях по дням:**\n> ПВП за неделю не было${now.daysWithData ? "" : " (данных за эту неделю нет)"}`, sep: "\n\n" });
-  } else if (now.eventDays.length) {
-    for (const d of now.eventDays) {
-      const lines = factions.map((f) => {
-        const count = d.counts.get(f.code);
-        const name = names.get(f.code)!;
-        if (count === null || count === undefined) return `> ${dotted(name, width, "⚠️ нет данных")}`;
-        return `> ${dotted(name, width, String(count))}${count === 0 ? " ⚠️" : ""}`;
-      });
-      const wd = WEEKDAY_SHORT[weekdayOfKey(d.date)];
-      parts.push({ text: [`**${formatDateKey(d.date).slice(0, 5)} (${wd}), ${d.event}:**`, ...lines].join("\n"), sep: "\n\n" });
-    }
-
-    // Итого и динамика
-    const prevComparable = prev.eventDays.length > 0;
-    const trends = new Map<string, Trend>();
-    const totalLines = factions.map((f) => {
-      const cur = now.perFaction.get(f.code)!;
-      const old = prevComparable ? prev.perFaction.get(f.code)!.avg : null;
-      const trend = trendOf(cur.avg, old);
-      trends.set(f.code, trend);
-      const name = names.get(f.code)!;
-      const base = `${fmt(cur.total)} (ср. ${fmt(cur.avg)})${cur.missing ? " ⚠️ есть дни без данных" : ""}`;
-      const tail =
-        trend.kind === "up" ? ` ▲ ${signed(trend.pct!)} 📈`
-        : trend.kind === "down" ? ` ▼ ${signed(trend.pct!)} 📉`
-        : trend.kind === "new" ? " ▲ в прошлую неделю ПВП у фракции не было 📈"
-        : trend.kind === "flat" && trend.pct !== undefined ? ` ≈ ${signed(trend.pct)}`
-        : "";
-      return `> ${dotted(name, width, base + tail)}`;
-    });
-    const heading = prevComparable ? `**Итого за неделю (сравнение с ${range(prevStart)}):**` : "**Итого за неделю:**";
-    parts.push({ text: [heading, ...totalLines].join("\n"), sep: "\n\n" });
-    if (!prevComparable) {
-      noPrevNote = prev.daysWithData
-        ? `ℹ️ Динамики нет: на прошлой неделе (${range(prevStart)}) ПВП не было.`
-        : `ℹ️ Динамики нет: данных за прошлую неделю (${range(prevStart)}) нет.`;
-    }
-
-    const up = factions.filter((f) => ["up", "new"].includes(trends.get(f.code)!.kind));
-    const down = factions.filter((f) => trends.get(f.code)!.kind === "down");
-    const never = factions.filter((f) => now.perFaction.get(f.code)!.total === 0 && !now.perFaction.get(f.code)!.missing);
-    const label = (f: WeeklyFaction) => {
-      const t = trends.get(f.code)!;
-      return `${names.get(f.code)}${t.pct !== undefined && t.kind !== "new" ? ` (${signed(t.pct)})` : ""}`;
-    };
-    const dynamics: string[] = [];
-    if (prevComparable) {
-      if (up.length) dynamics.push(`> 📈 Растут: ${up.map(label).join(", ")}`);
-      if (down.length) dynamics.push(`> 📉 Просели: ${down.map(label).join(", ")}`);
-      if (!up.length && !down.length) dynamics.push("> Без заметных изменений");
-    }
-    if (never.length) dynamics.push(`> ⚠️ Не участвовали ни в одном ПВП: ${never.map((f) => names.get(f.code)).join(", ")}`);
-    if (dynamics.length) parts.push({ text: ["**Динамика:**", ...dynamics].join("\n"), sep: "\n\n" });
+  if (now.daysWithData === 0) {
+    return done([`${title}\n\nДанных за эту неделю нет: в эти дни бот не читал логи.`]);
   }
 
-  // ВЗХ: по дням, затем итог за неделю и динамика к прошлой неделе (по среднему на одно ВЗХ).
-  if (hNow.days.length) {
-    for (const d of hNow.days) {
-      const lines = factions.map((f) => {
-        const count = d.counts.get(f.code);
-        const name = names.get(f.code)!;
-        if (count === null || count === undefined) return `> ${dotted(name, width, "⚠️ нет данных")}`;
-        return `> ${dotted(name, width, String(count))}${count === 0 ? " ⚠️" : ""}`;
-      });
-      const wd = WEEKDAY_SHORT[weekdayOfKey(d.date)];
-      parts.push({ text: [`**${formatDateKey(d.date).slice(0, 5)} (${wd}), ${HUMMER_TITLE}:**`, ...lines].join("\n"), sep: "\n\n" });
-    }
-    const comparable = hPrev.days.length > 0;
-    const totalLines = factions.map((f) => {
-      const cur = hNow.perFaction.get(f.code)!;
-      const trend = trendOf(cur.avg, comparable ? hPrev.perFaction.get(f.code)!.avg : null, HUMMER_CHANGE_ABS);
-      const base = `${fmt(cur.total)} (ср. ${fmt(cur.avg)})${cur.missing ? " ⚠️ есть дни без данных" : ""}`;
-      const tail =
-        trend.kind === "up" ? ` ▲ ${signed(trend.pct!)} 📈`
-        : trend.kind === "down" ? ` ▼ ${signed(trend.pct!)} 📉`
-        : trend.kind === "new" ? " ▲ в прошлую неделю хаммеров не было 📈"
-        : trend.kind === "flat" && trend.pct !== undefined ? ` ≈ ${signed(trend.pct)}`
-        : "";
-      return `> ${dotted(names.get(f.code)!, width, base + tail)}`;
-    });
-    parts.push({
-      text: [`**ВЗХ за неделю — всего хаммеров${comparable ? ` (сравнение с ${range(prevStart)})` : ""}:**`, ...totalLines].join("\n"),
-      sep: "\n\n",
-    });
-    if (!comparable) {
-      noPrevHummerNote = hPrev.days.length === 0 && prev.daysWithData
-        ? `ℹ️ Динамики ВЗХ нет: на прошлой неделе (${range(prevStart)}) ВЗХ не было.`
-        : `ℹ️ Динамики ВЗХ нет: данных за прошлую неделю (${range(prevStart)}) нет.`;
-    }
+  // Типы, которые были хотя бы на одной из двух недель.
+  const kinds = KINDS.filter((k) => now.events[k.kind] > 0 || prev.events[k.kind] > 0);
+  if (!kinds.length) {
+    const note = now.daysWithData < 7 ? `\n\nℹ️ Учтено суток: ${now.daysWithData} из 7.` : "";
+    return done([`${title}\n\nПВП-мероприятий за неделю не было.${note}`]);
   }
 
-  const notes: string[] = [...(noPrevNote ? [noPrevNote] : []), ...(noPrevHummerNote ? [noPrevHummerNote] : [])];
-  if (now.daysWithData < 7) notes.push(`⚠️ Данные есть за ${now.daysWithData} из 7 суток этой недели: недостающие сутки бот не читал.`);
-  if (((now.eventDays.length && prev.eventDays.length) || (hNow.days.length && hPrev.days.length)) && prev.daysWithData < 7) notes.push(`⚠️ Прошлая неделя неполная: данные за ${prev.daysWithData} из 7 суток, динамика примерная.`);
-  if (notes.length) parts.push({ text: notes.join("\n"), sep: "\n\n" });
+  const hasPrev = prev.daysWithData > 0;
+  const sameCoverage = now.daysWithData === prev.daysWithData;
+  let arrowsSuppressed = false;
 
-  return { messages: chunkParts(parts), daysWithData: now.daysWithData, prevDaysWithData: prev.daysWithData };
+  const parts: { text: string; sep: string }[] = [{ text: title, sep: "" }];
+  for (const f of factions) {
+    const lines = kinds.map((k) => {
+      const cur = now.totals[k.kind].get(f.code) ?? 0;
+      const before = prev.totals[k.kind].get(f.code) ?? 0;
+      const base = `${k.title}: ${cur} ${plural(cur, k.forms)}`;
+      if (!hasPrev) return `> ${base}`;
+      // Честное сравнение: суток данных и мероприятий этого типа поровну на обеих неделях.
+      const comparable = sameCoverage && now.events[k.kind] === prev.events[k.kind];
+      if (!comparable) arrowsSuppressed = true;
+      return `> ${base} (было ${before})${comparable ? arrow(cur, before, k.minAbs) : ""}`;
+    });
+    parts.push({ text: [`**${shortFactionName(f.code, f.name)}**`, ...lines].join("\n"), sep: "\n\n" });
+  }
+
+  parts.push({ text: "-# 📈 / 📉 — изменение больше чем на четверть к прошлой неделе. «Участие» — один игрок на одном мероприятии.", sep: "\n\n" });
+  const notes: string[] = [];
+  if (now.daysWithData < 7) notes.push(`ℹ️ Учтено суток: ${now.daysWithData} из 7.`);
+  if (!hasPrev) notes.push("ℹ️ Данных за прошлую неделю нет, сравнения нет.");
+  else if (arrowsSuppressed) notes.push("ℹ️ Стрелки не ставились там, где неделя неполная или мероприятий было разное число.");
+  if (notes.length) parts.push({ text: notes.join("\n"), sep: "\n" });
+
+  return done(chunkParts(parts));
 }

@@ -7,6 +7,7 @@
 //   Входит на территорию войны за …            (ПВП-мероприятие)
 //   вывозит хаммер с территории и получает N материалов …   (ВЗХ: входов нет, считаем число таких строк = вывезенных хаммеров;
 //                                                            количество материалов не важно)
+//   участвует в захвате черного рынка.         (захват черного рынка, раз в сутки: считаем уникальных участников)
 
 import type { LogRow } from "../warehouse/logsPage.js";
 
@@ -35,11 +36,14 @@ const PVP_RE = /^Входит на территорию войны за\s+(.+?)\
 const KIND_BY_WORD: Record<string, ReasonKind> = { повышает: "promotion", понижает: "demotion", увольняет: "dismissal" };
 
 const HUMMER_RE = /^вывозит\s+хаммер/iu;
+// «черного» и «чёрного» — оба написания.
+const MARKET_RE = /^участвует в захвате ч[её]рного рынка/iu;
 
-export function parseRow(row: LogRow): { reason?: ReasonEvent; pvp?: PvpEntry; hummer?: boolean } {
+export function parseRow(row: LogRow): { reason?: ReasonEvent; pvp?: PvpEntry; hummer?: boolean; market?: { characterId: string } } {
   const text = row.text.replace(/\s+/g, " ").trim();
 
   if (HUMMER_RE.test(text)) return { hummer: true };
+  if (MARKET_RE.test(text)) return { market: { characterId: row.characterId || row.character } };
 
   const action = text.match(ACTION_RE);
   if (action) {
